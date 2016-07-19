@@ -1,9 +1,9 @@
 HAKYLL = $(shell pwd)/result/bin/johnwiegley
 
-all: $(HAKYLL)
+all: build
 	echo JohnWiegley.com is built
 
-$(HAKYLL):
+build:
 	nix-build '<nixpkgs>' --fallback -A pkgs.haskell7103Packages.johnwiegley
 
 site:
