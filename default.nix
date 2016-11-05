@@ -1,6 +1,6 @@
-{ mkDerivation, attoparsec, base, binary, blaze-html, blaze-markup
+{ mkDerivation, base, binary, blaze-html, blaze-markup
 , directory, exceptions, filepath, foldl, hakyll, lens, old-locale
-, pandoc, pandoc-types, parsec, pipes, pipes-attoparsec
+, pandoc, pandoc-types, parsec, pipes
 , pipes-bytestring, pipes-group, pipes-safe, pipes-shell
 , pipes-text, process, split, stdenv, strict, temporary, text, time
 , transformers, yuicompressor
@@ -12,9 +12,9 @@ mkDerivation {
   isLibrary = false;
   isExecutable = true;
   buildDepends = [
-    attoparsec base binary blaze-html blaze-markup directory exceptions
+    base binary blaze-html blaze-markup directory exceptions
     filepath foldl hakyll lens old-locale pandoc pandoc-types parsec
-    pipes pipes-attoparsec pipes-bytestring pipes-group pipes-safe
+    pipes pipes-bytestring pipes-group pipes-safe
     pipes-shell pipes-text process split strict temporary text time
     transformers yuicompressor
   ];
