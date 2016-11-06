@@ -1,4 +1,4 @@
-{ mkDerivation, base, binary, blaze-html, blaze-markup
+{ mkDerivation, base, binary
 , directory, exceptions, filepath, foldl, hakyll, lens, old-locale
 , pandoc, pandoc-types, parsec, pipes
 , pipes-bytestring, pipes-group, pipes-safe, pipes-shell
@@ -12,7 +12,7 @@ mkDerivation {
   isLibrary = false;
   isExecutable = true;
   buildDepends = [
-    base binary blaze-html blaze-markup directory exceptions
+    base binary directory exceptions
     filepath foldl hakyll lens old-locale pandoc pandoc-types parsec
     pipes pipes-bytestring pipes-group pipes-safe
     pipes-shell pipes-text process split strict temporary text time

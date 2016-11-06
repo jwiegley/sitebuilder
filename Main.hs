@@ -22,11 +22,6 @@ import           Prelude hiding (concatMap, any, all)
 import           System.Directory
 import           System.FilePath
 import           System.IO.Unsafe (unsafePerformIO)
-import           Text.Blaze.Html ((!), toValue)
-import           Text.Blaze.Html.Renderer.String (renderHtml)
-import qualified Text.Blaze.Html5 as H
-import qualified Text.Blaze.Html5.Attributes as A
-import           Text.Blaze.Internal (preEscapedString)
 
 main :: IO ()
 main = do
@@ -35,13 +30,15 @@ main = do
   hakyllWith defaultConfiguration $ do
     match "templates/*" $ compile templateCompiler
 
-    match ("images/*.jpg" .||.
+    match ("files/**"     .||.
+           "images/*.jpg" .||.
            "images/*.png" .||.
            "images/*.gif" .||.
-           "favicon.ico"  .||.
-           "files/**") $ route idRoute >> compile copyFileCompiler
+           "favicon.ico") $
+        route idRoute >> compile copyFileCompiler
 
-    match ("css/*.css" .||. "js/*.js") $ route idRoute >> compile yuiCompressor
+    match ("css/*.css" .||. "js/*.js") $
+        route idRoute >> compile yuiCompressor
 
     match "pages/*" $ do
         route wordpressRoute
@@ -57,34 +54,50 @@ main = do
             >>= saveSnapshot "content"
             >>= loadForSite
 
-    paginate now 6 10 $ \idx maxIndex itemsForPage -> do
-        let ident | show idx == "1" = fromFilePath "index.html"
-                  | otherwise = fromFilePath $
-                                "page/" ++ show idx ++ "/index.html"
-        create [ident] $ do
+    paginate now (Just (6, 10)) $ \idx maxIndex itemsForPage ->
+        create [fromFilePath $
+                    if idx == 1
+                    then "index.html"
+                    else "page/" ++ show idx ++ "/index.html"] $ do
             route idRoute
-            compile $ do
-                items <- forM itemsForPage $ \ident' ->
-                    loadSnapshot ident' "teaser"
-                        >>= "templates/teaser.html" $$=
-                                (field "teaser" teaserBody <> postCtx)
-                        >>= wordpressifyUrls
-                let postsCtx =
-                        constField "posts" (concatMap itemBody items) <>
-                        constField "navlinkolder"
-                            (indexNavLink idx 1 maxIndex) <>
-                        constField "navlinknewer"
-                            (indexNavLink idx (-1) maxIndex) <>
-                        defaultContext
-                makeItem ""
-                    >>= "templates/list.html" $$= postsCtx
-                    >>= loadForSite
+            compile $ makeItem ""
+                >>= "templates/list.html" $$=
+                    (listField "posts"
+                         (field "teaser" teaserBody <> postCtx)
+                         (forM itemsForPage $ \ident' ->
+                              loadSnapshot ident' "teaser"
+                                  >>= wordpressifyUrls) <>
+                     (if idx == 1
+                      then constField "isFirst" "true"
+                      else mempty) <>
+                     (if idx == 2
+                      then constField "isSecond" "true"
+                      else mempty) <>
+                     (if idx == maxIndex
+                      then constField "isLast" "true"
+                      else mempty) <>
+                     constField "nextIndex" (show (succ idx)) <>
+                     constField "prevIndex" (show (pred idx)) <>
+                     defaultContext)
+                >>= loadForSite
+
+    paginate now Nothing $ \_ _ itemsForPage ->
+        create [fromFilePath "archives/index.html"] $ do
+            route idRoute
+            compile $ makeItem ""
+                >>= "templates/archives.html" $$=
+                    (listField "posts" postCtx
+                         (forM itemsForPage $ \ident' ->
+                              loadSnapshot ident' "teaser"
+                                  >>= wordpressifyUrls) <>
+                     defaultContext)
+                >>= loadForSite
 
     create ["rss.xml"] $ do
         route idRoute
         compile $ do
-            posts <- fmap (take 10) . recentFirst =<<
-                loadAllSnapshots allPosts "content"
+            posts <- take 10 <$>
+                (recentFirst =<< loadAllSnapshots allPosts "content")
             renderRss feedConfiguration feedContext posts
   where
     ($$=) = loadAndApplyTemplate
@@ -95,6 +108,7 @@ main = do
     postCtx = mconcat
         [ dateField "date"  "%B %e, %Y"
         , dateField "year"  "%Y"
+        , dateField "mon"   "%m"
         , dateField "month" "%B"
         , dateField "day"   "%e"
         , defaultContext
@@ -191,13 +205,16 @@ wpUrlField key = field key $
   where
     toWordPressUrl = replaceAll "/index.html" (const "/") . toUrl
 
-paginate:: UTCTime -> Int -> Int -> (Int -> Int -> [Identifier] -> Rules ()) -> Rules ()
-paginate moment itemsPerPage pageLimit rules = do
+paginate:: UTCTime -> Maybe (Int, Int) -> (Int -> Int -> [Identifier] -> Rules ()) -> Rules ()
+paginate moment mlim rules = do
     idents <- fmap concat $ (getMatches allPosts >>=) $ mapM $ \ident -> do
         meta <- getMetadata ident
         return [ident | dateBefore moment meta]
     let sorted      = sortBy (flip byDate) idents
-        chunks      = take pageLimit $ chunksOf itemsPerPage sorted
+        chunks      = case mlim of
+            Just (itemsPerPage, pageLimit) ->
+                take pageLimit $ chunksOf itemsPerPage sorted
+            Nothing -> [sorted]
         maxIndex    = length chunks
         pageNumbers = take maxIndex [1..]
         process i   = rules i maxIndex
@@ -213,21 +230,6 @@ paginate moment itemsPerPage pageLimit rules = do
                 . splitAll "-"
         in compare (parseTime' fn1 :: Maybe UTCTime)
                    (parseTime' fn2 :: Maybe UTCTime)
-
-indexNavLink :: Int -> Int -> Int -> String
-indexNavLink n d maxn = renderHtml ref
-  where
-    ref = if refPage == ""
-          then preEscapedString "&nbsp;"
-          else H.a ! A.href (toValue $ toUrl refPage) $ preEscapedString lab
-    lab = if d > 0
-          then "Older Entries &raquo;"
-          else "&laquo; Newer Entries"
-    refPage = if n + d < 1 || n + d > maxn
-              then ""
-              else case n + d of
-                1 -> "/"
-                _ -> "/page/" ++ show (n + d) ++ "/"
 
 feedConfiguration :: FeedConfiguration
 feedConfiguration = FeedConfiguration

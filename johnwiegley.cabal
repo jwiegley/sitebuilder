@@ -21,8 +21,6 @@ Executable johnwiegley
   Build-depends:
       base         >= 4.6    && < 5
     , binary
-    , blaze-html
-    , blaze-markup
     , directory    >= 1.2    && < 1.3
     , exceptions
     , filepath     >= 1.3    && < 2
