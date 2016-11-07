@@ -174,7 +174,7 @@ teaserBody = return . extractTeaser . maxLengthTeaser . compactTeaser . itemBody
         . replaceAll "</li>" (const "")
         . replaceAll "<h[0-9][^>]*>" (const "")
         . replaceAll "</h[0-9]>" (const "")
-        . replaceAll "<pre>" (const "")
+        . replaceAll "<pre[^>]*>" (const "")
         . replaceAll "</pre>" (const "")
         . replaceAll "<a [^>]*>" (const "")
         . replaceAll "</a>" (const "")
