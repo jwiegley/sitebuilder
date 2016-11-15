@@ -1,29 +1,22 @@
-HAKYLL = $(shell pwd)/result/bin/johnwiegley
+SITENAME = johnwiegley
+SITEPORT = 8082
+
+HAKYLL = $(shell pwd)/result/bin/$(SITENAME)
 
 all: build
-	echo JohnWiegley.com is built
 
 build:
-	nix-build '<nixpkgs>' -A haskell801Packages.johnwiegley
+	nix-build '<nixpkgs>' -A haskPkgs.$(SITENAME)
 
-site:
+site: build
 	$(HAKYLL) rebuild
 
 watch:
 	$(HAKYLL) watch
 
 deploy: site
-	@echo Copying files...
-	rsync --checksum -av --delete _site/ jw:/srv/johnwiegley/
-
-	@echo Setting ownership...
-	ssh jw chown -R nginx:nginx /srv/johnwiegley
-
-	@echo Setting permissions...
-	ssh jw chmod -R ugo+rX /srv/johnwiegley
-
-	@echo Setting contexts...
-	ssh jw chcon -R -u system_u -t httpd_sys_content_t /srv/johnwiegley
-
-	@echo Restarting nginx...
-	ssh jw service nginx restart
+	docker build -t $(SITENAME):latest .
+	eval $(docker-machine env vps)
+	docker stop $(SITENAME)
+	docker rm $(SITENAME)
+	docker run -d -p $(SITEPORT):80 --name $(SITENAME) $(SITENAME)
