@@ -1,11 +1,15 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
 
+{-# OPTIONS_GHC -fno-warn-orphans #-}
+
 module Main where
 
 import           Control.Applicative
 import           Control.Lens hiding (Context, pre)
 import           Control.Monad hiding (forM_)
+import           Data.Aeson (FromJSON(..), Value(Object), (.:))
+import           Data.Aeson.Types (typeMismatch)
 import           Data.Foldable hiding (elem)
 import           Data.List hiding (concatMap, any, all)
 import           Data.List.Split hiding (oneOf)
@@ -13,19 +17,21 @@ import           Data.Maybe
 import           Data.Monoid
 import           Data.Text.Lazy (unpack)
 import           Data.Time
+import           Data.Yaml (decodeFile)
 import           Hakyll
 import           Pipes.Safe
 import           Pipes.Shell
 import qualified Pipes.Text as Text
 import qualified Pipes.Text.Encoding as Text
 import           Prelude hiding (concatMap, any, all)
-import           System.Directory
 import           System.FilePath
 import           System.IO.Unsafe (unsafePerformIO)
 
 main :: IO ()
 main = do
   now <- getCurrentTime
+
+  -- directories: css images js pages posts templates
 
   hakyllWith defaultConfiguration $ do
     match "templates/*" $ compile templateCompiler
@@ -121,10 +127,7 @@ yuiCompressor :: Compiler (Item String)
 yuiCompressor = do
     path <- getResourceFilePath
     makeItem $ unsafePerformIO $ do
-        home <- getHomeDirectory
-        let javaCmd = "java -jar "
-                   ++ (home </> ".nix-profile/lib/yuicompressor.jar") ++ " "
-                   ++ path
+        let javaCmd = "yui-compressor " ++ path
         runSafeT $ fmap unpack
                  $ Text.toLazyM
                  $ void
@@ -231,14 +234,20 @@ paginate moment mlim rules = do
         in compare (parseTime' fn1 :: Maybe UTCTime)
                    (parseTime' fn2 :: Maybe UTCTime)
 
+instance FromJSON FeedConfiguration where
+    parseJSON (Object v) =
+        FeedConfiguration
+            <$> v .: "title"
+            <*> v .: "description"
+            <*> v .: "author-name"
+            <*> v .: "author-email"
+            <*> v .: "root"
+    parseJSON invalid = typeMismatch "FeedConfiguration" invalid
+
 feedConfiguration :: FeedConfiguration
-feedConfiguration = FeedConfiguration
-    { feedTitle       = "What Thoughts May Come"
-    , feedDescription = "RSS feed for John Wiegley's blog"
-    , feedAuthorName  = "John Wiegley"
-    , feedAuthorEmail = "jwiegley@gmail.com"
-    , feedRoot        = "http://johnwiegley.com"
-    }
+feedConfiguration =
+    fromMaybe (error "Could not open or parse config.yaml file")
+        $ unsafePerformIO $ decodeFile "config.yaml"
 
 feedContext :: Context String
 feedContext = mconcat

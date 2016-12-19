@@ -1,8 +1,8 @@
-Name:          johnwiegley
+Name:          sitebuilder
 Version:       1.0.0
-Synopsis:      What Thoughts May Come
-Description:   What Thoughts May Come
-Homepage:      http://johnwiegley.com/
+Synopsis:      A Hakyll site builder
+Description:   A Hakyll site builder
+Homepage:      http://github.com/jwiegley/sitebuilder
 License:       AllRightsReserved
 License-file:  LICENSE
 Author:        John Wiegley
@@ -12,9 +12,7 @@ Category:      Web
 Build-type:    Simple
 Cabal-version: >= 1.8
 
-Extra-source-files: README.md
-
-Executable johnwiegley
+Executable sitebuilder
   Main-is:     Main.hs
   Ghc-options: -Wall
 
@@ -44,3 +42,5 @@ Executable johnwiegley
     , text
     , time
     , transformers
+    , aeson
+    , yaml
