@@ -19,4 +19,7 @@ COPY . /opt/sitebuilder
 
 RUN cabal install -j4
 
-CMD cabal exec sitebuilder
+RUN mkdir /tmp/site
+WORKDIR /tmp/site
+
+CMD ["cabal", "--sandbox-config-file=/opt/sitebuilder/cabal.sandbox.config", "exec", "sitebuilder"]

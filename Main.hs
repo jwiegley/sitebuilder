@@ -5,27 +5,22 @@
 
 module Main where
 
-import           Control.Applicative
-import           Control.Lens hiding (Context, pre)
-import           Control.Monad hiding (forM_)
-import           Data.Aeson (FromJSON(..), Value(Object), (.:))
-import           Data.Aeson.Types (typeMismatch)
-import           Data.Foldable hiding (elem)
-import           Data.List hiding (concatMap, any, all)
-import           Data.List.Split hiding (oneOf)
-import           Data.Maybe
-import           Data.Monoid
-import           Data.Text.Lazy (unpack)
-import           Data.Time
-import           Data.Yaml (decodeFile)
-import           Hakyll
-import           Pipes.Safe
-import           Pipes.Shell
-import qualified Pipes.Text as Text
-import qualified Pipes.Text.Encoding as Text
-import           Prelude hiding (concatMap, any, all)
-import           System.FilePath
-import           System.IO.Unsafe (unsafePerformIO)
+import Control.Applicative
+import Control.Monad hiding (forM_)
+import Data.Aeson (FromJSON(..), Value(Object), (.:))
+import Data.Aeson.Types (typeMismatch)
+import Data.Foldable hiding (elem)
+import Data.List hiding (concatMap, any, all)
+import Data.List.Split hiding (oneOf)
+import Data.Maybe
+import Data.Monoid
+import Data.Time
+import Data.Yaml (decodeFile)
+import Hakyll
+import Prelude hiding (concatMap, any, all)
+import System.FilePath
+import System.IO.Unsafe (unsafePerformIO)
+import System.Process (readProcess)
 
 main :: IO ()
 main = do
@@ -126,12 +121,7 @@ allPosts = "posts/*"
 yuiCompressor :: Compiler (Item String)
 yuiCompressor = do
     path <- getResourceFilePath
-    makeItem $ unsafePerformIO $ do
-        let javaCmd = "yui-compressor " ++ path
-        runSafeT $ fmap unpack
-                 $ Text.toLazyM
-                 $ void
-                 $ producerCmd' javaCmd ^. Text.utf8
+    makeItem $ unsafePerformIO $ readProcess "yui-compressor" [path] ""
 
 dateBefore :: UTCTime -> Metadata -> Bool
 dateBefore moment meta = case lookupString "date" meta of
@@ -210,10 +200,10 @@ wpUrlField key = field key $
 
 paginate:: UTCTime -> Maybe (Int, Int) -> (Int -> Int -> [Identifier] -> Rules ()) -> Rules ()
 paginate moment mlim rules = do
-    idents <- fmap concat $ (getMatches allPosts >>=) $ mapM $ \ident -> do
+    idents <- (getMatches allPosts >>=) $ mapM $ \ident -> do
         meta <- getMetadata ident
         return [ident | dateBefore moment meta]
-    let sorted      = sortBy (flip byDate) idents
+    let sorted      = sortBy (flip byDate) (concat idents)
         chunks      = case mlim of
             Just (itemsPerPage, pageLimit) ->
                 take pageLimit $ chunksOf itemsPerPage sorted
