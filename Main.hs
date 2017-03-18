@@ -47,7 +47,7 @@ main = do
             >>= "templates/page.html" $$= defaultContext
             >>= loadForSite
 
-    tags <- buildTags allPosts (fromCapture "tags/*")
+    tags <- buildTags allPosts (fromCapture "tags/*/index.html")
 
     match allPosts $ do
         route wordpressRoute
@@ -70,6 +70,9 @@ main = do
                 >>= "templates/archives.html" $$=
                     (constField "title" title <>
                      listField "posts" postCtx (return posts) <>
+                     listField "tags" postCtx
+                         (return $ map (\x -> Item (fromFilePath (fst x)) (fst x))
+                                 $ tagsMap tags) <>
                      defaultContext)
                 >>= loadForSite
 
@@ -109,6 +112,9 @@ main = do
                          (forM itemsForPage $ \ident' ->
                               loadSnapshot ident' "teaser"
                                   >>= wordpressifyUrls) <>
+                     listField "tags" postCtx
+                         (return $ map (\x -> Item (fromFilePath (fst x)) (fst x))
+                                 $ tagsMap tags) <>
                      defaultContext)
                 >>= loadForSite
 
