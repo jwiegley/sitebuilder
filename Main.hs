@@ -47,6 +47,8 @@ main = do
             >>= "templates/page.html" $$= defaultContext
             >>= loadForSite
 
+    tags <- buildTags allPosts (fromCapture "tags/*")
+
     match allPosts $ do
         route wordpressRoute
         compile $ do
@@ -54,8 +56,21 @@ main = do
             guard $ dateBefore now ident
             pandocCompiler
                 >>= saveSnapshot "teaser"
-                >>= "templates/post.html" $$= postCtx
+                >>= "templates/post.html" $$=
+                    (tagsField "tags" tags <> postCtx)
                 >>= saveSnapshot "content"
+                >>= loadForSite
+
+    tagsRules tags $ \tag pat -> do
+        let title = "Posts tagged \"" ++ tag ++ "\""
+        route idRoute
+        compile $ do
+            posts <- recentFirst =<< loadAll pat
+            makeItem ""
+                >>= "templates/archives.html" $$=
+                    (constField "title" title <>
+                     listField "posts" postCtx (return posts) <>
+                     defaultContext)
                 >>= loadForSite
 
     paginate now (Just (6, 10)) $ \idx maxIndex itemsForPage ->
