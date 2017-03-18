@@ -100,6 +100,20 @@ main = do
             posts <- take 10 <$>
                 (recentFirst =<< loadAllSnapshots allPosts "content")
             renderRss feedConfiguration feedContext posts
+
+    create ["sitemap.xml"] $ do
+        route idRoute
+        compile $ do
+            posts <- recentFirst =<< loadAll allPosts
+            pages <- loadAll "pages/*"
+            let allEntries = return (pages ++ posts)
+            let sitemapCtx = mconcat
+                    [ listField "entries" postCtx allEntries
+                    , defaultContext
+                    ]
+            makeItem ""
+                >>= loadAndApplyTemplate "templates/sitemap.xml" sitemapCtx
+                >>= wordpressifyUrls
   where
     ($$=) = loadAndApplyTemplate
 
