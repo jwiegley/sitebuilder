@@ -47,13 +47,16 @@ main = do
             >>= "templates/page.html" $$= defaultContext
             >>= loadForSite
 
-    matchMetadata allPosts (dateBefore now) $ do
+    match allPosts $ do
         route wordpressRoute
-        compile $ pandocCompiler
-            >>= saveSnapshot "teaser"
-            >>= "templates/post.html" $$= postCtx
-            >>= saveSnapshot "content"
-            >>= loadForSite
+        compile $ do
+            ident <- getUnderlying
+            guard $ dateBefore now ident
+            pandocCompiler
+                >>= saveSnapshot "teaser"
+                >>= "templates/post.html" $$= postCtx
+                >>= saveSnapshot "content"
+                >>= loadForSite
 
     paginate now (Just (6, 10)) $ \idx maxIndex itemsForPage ->
         create [fromFilePath $
@@ -140,19 +143,21 @@ yuiCompressor = do
     path <- getResourceFilePath
     makeItem $ unsafePerformIO $ readProcess "yui-compressor" [path] ""
 
-dateBefore :: UTCTime -> Metadata -> Bool
-dateBefore moment meta = case lookupString "date" meta of
-    Nothing -> False
-    Just dateStr ->
-        let mres = parseDate "%Y-%m-%d %a" dateStr    <|>
-                   parseDate "%Y-%m-%d %H:%M" dateStr <|>
-                   parseDate "%Y-%m-%d" dateStr       <|>
-                   parseDate "%a, %d %b %Y %H:%M:%S %z" dateStr in
-        case mres of
-            Nothing -> False
-            Just date -> diffUTCTime moment date > 0
+getItemUTC' :: Identifier -> UTCTime
+getItemUTC' id' =
+    fromMaybe empty'
+        $ msum
+        [ parseTime' "%Y-%m-%d"
+              $ intercalate "-"
+              $ take 3
+              $ splitAll "-" fnCand
+        | fnCand <- reverse (splitDirectories (toFilePath id')) ]
   where
-    parseDate = parseTimeM True defaultTimeLocale
+    empty' = error $ "getItemUTC': " ++ "could not parse time for " ++ show id'
+    parseTime' = parseTimeM True defaultTimeLocale
+
+dateBefore :: UTCTime -> Identifier -> Bool
+dateBefore moment ident = diffUTCTime moment (getItemUTC' ident) > 0
 
 teaserBody :: Item String -> Compiler String
 teaserBody = return . extractTeaser . maxLengthTeaser . compactTeaser . itemBody
@@ -220,10 +225,8 @@ wpIdentField = mapContext (last . init . splitOn "/") . wpUrlField
 
 paginate:: UTCTime -> Maybe (Int, Int) -> (Int -> Int -> [Identifier] -> Rules ()) -> Rules ()
 paginate moment mlim rules = do
-    idents <- (getMatches allPosts >>=) $ mapM $ \ident -> do
-        meta <- getMetadata ident
-        return [ident | dateBefore moment meta]
-    let sorted      = sortBy (flip byDate) (concat idents)
+    idents <- filter (dateBefore moment) <$> getMatches allPosts
+    let sorted      = sortBy (flip byDate) idents
         chunks      = case mlim of
             Just (itemsPerPage, pageLimit) ->
                 take pageLimit $ chunksOf itemsPerPage sorted
