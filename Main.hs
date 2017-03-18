@@ -111,7 +111,10 @@ main = do
         , dateField "year"  "%Y"
         , dateField "mon"   "%m"
         , dateField "month" "%B"
+        , dateField "day_"  "%d"
         , dateField "day"   "%e"
+        , wpIdentField "ident"
+        , wpUrlField "url"
         , defaultContext
         ]
 
@@ -178,8 +181,8 @@ wordpressRoute =
     gsubRoute "pages/" (const "") `composeRoutes`
     gsubRoute "^[0-9]{4}-[0-9]{2}-[0-9]{2}-"
         ((\x -> take 8 x ++ drop 11 x) . map replaceWithSlash) `composeRoutes`
-    gsubRoute ".org" (const "/index.html") `composeRoutes`
-    gsubRoute ".md" (const "/index.html")
+    gsubRoute "\\.org$" (const "/index.html") `composeRoutes`
+    gsubRoute "\\.md$" (const "/index.html")
   where
     replaceWithSlash c = if c == '-' || c == '_' then '/' else c
 
@@ -192,11 +195,14 @@ wordpressifyUrls item = do
   where
     wordpressifyUrlsWith = withUrls $ replaceAll "/index.html" (const "/")
 
-wpUrlField :: String -> Context a
+wpUrlField :: String -> Context String
 wpUrlField key = field key $
     fmap (maybe "" toWordPressUrl) . getRoute . itemIdentifier
   where
     toWordPressUrl = replaceAll "/index.html" (const "/") . toUrl
+
+wpIdentField :: String -> Context String
+wpIdentField = mapContext (last . init . splitOn "/") . wpUrlField
 
 paginate:: UTCTime -> Maybe (Int, Int) -> (Int -> Int -> [Identifier] -> Rules ()) -> Rules ()
 paginate moment mlim rules = do
@@ -247,6 +253,7 @@ feedContext = mconcat
     , dateField "date" "%Y-%m-%d"
     , dateField "year" "%Y"
     , dateField "month" "%B"
+    , dateField "day_" "%d"
     , dateField "day" "%e"
     ]
 
