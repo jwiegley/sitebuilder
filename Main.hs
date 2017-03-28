@@ -26,20 +26,17 @@ main :: IO ()
 main = do
   now <- getCurrentTime
 
-  -- directories: css images js pages posts templates
-
   hakyllWith defaultConfiguration $ do
     match "templates/*" $ compile templateCompiler
 
-    match ("files/**"     .||.
-           "images/*.jpg" .||.
-           "images/*.png" .||.
-           "images/*.gif" .||.
-           "favicon.ico") $
-        route idRoute >> compile copyFileCompiler
+    match ("files/**"    .||. "images/**"   .||.
+           "favicon.ico" .||. "robots.txt") $ do
+        route idRoute
+        compile copyFileCompiler
 
-    match ("css/*.css" .||. "js/*.js") $
-        route idRoute >> compile yuiCompressor
+    match ("css/*.css" .||. "js/*.js") $ do
+        route idRoute
+        compile yuiCompressor
 
     match "pages/*" $ do
         route wordpressRoute
@@ -49,27 +46,26 @@ main = do
 
     tags <- buildTags allPosts (fromCapture "tags/*/index.html")
 
-    match allPosts $ do
+    posts <- getMatchesBefore now allPosts
+    create posts $ do
         route wordpressRoute
-        compile $ do
-            ident <- getUnderlying
-            guard $ dateBefore now ident
-            pandocCompiler
-                >>= saveSnapshot "teaser"
-                >>= "templates/post.html" $$=
-                    (tagsField "tags" tags <> postCtx)
-                >>= saveSnapshot "content"
-                >>= loadForSite
+        compile $ pandocCompiler
+            >>= saveSnapshot "teaser"
+            >>= "templates/post.html" $$=
+                (tagsField "tags" tags <> postCtx)
+            >>= saveSnapshot "content"
+            >>= loadForSite
 
     tagsRules tags $ \tag pat -> do
-        let title = "Posts tagged \"" ++ tag ++ "\""
         route idRoute
         compile $ do
-            posts <- recentFirst =<< loadAll pat
+            ps <- recentFirst
+                =<< traverse load
+                =<< getMatchesBefore now pat
             makeItem ""
                 >>= "templates/archives.html" $$=
-                    (constField "title" title <>
-                     listField "posts" postCtx (return posts) <>
+                    (constField "title" ("Posts tagged \"" ++ tag ++ "\"") <>
+                     listField "posts" postCtx (return ps) <>
                      listField "tags" postCtx
                          (return $ map (\x -> Item (fromFilePath (fst x)) (fst x))
                                  $ tagsMap tags) <>
@@ -120,17 +116,17 @@ main = do
 
     create ["rss.xml"] $ do
         route idRoute
-        compile $ do
-            posts <- take 10 <$>
-                (recentFirst =<< loadAllSnapshots allPosts "content")
-            renderRss feedConfiguration feedContext posts
+        compile $ renderRss feedConfiguration feedContext
+            =<< return . take 10
+            =<< recentFirst
+            =<< traverse (`loadSnapshot` "content") posts
 
     create ["sitemap.xml"] $ do
         route idRoute
         compile $ do
-            posts <- recentFirst =<< loadAll allPosts
+            ps <- recentFirst =<< traverse load posts
             pages <- loadAll "pages/*"
-            let allEntries = return (pages ++ posts)
+            let allEntries = return (pages ++ ps)
             let sitemapCtx = mconcat
                     [ listField "entries" postCtx allEntries
                     , defaultContext
@@ -156,9 +152,6 @@ main = do
         , defaultContext
         ]
 
-allPosts :: Pattern
-allPosts = "posts/*"
-
 yuiCompressor :: Compiler (Item String)
 yuiCompressor = do
     path <- getResourceFilePath
@@ -176,9 +169,6 @@ getItemUTC' id' =
   where
     empty' = error $ "getItemUTC': " ++ "could not parse time for " ++ show id'
     parseTime' = parseTimeM True defaultTimeLocale
-
-dateBefore :: UTCTime -> Identifier -> Bool
-dateBefore moment ident = diffUTCTime moment (getItemUTC' ident) > 0
 
 teaserBody :: Item String -> Compiler String
 teaserBody = return . extractTeaser . maxLengthTeaser . compactTeaser . itemBody
@@ -244,9 +234,17 @@ wpUrlField key = field key $
 wpIdentField :: String -> Context String
 wpIdentField = mapContext (last . init . splitOn "/") . wpUrlField
 
+allPosts :: Pattern
+allPosts = "posts/*"
+
+getMatchesBefore :: MonadMetadata m => UTCTime -> Pattern -> m [Identifier]
+getMatchesBefore moment pat = filter dateBefore <$> getMatches pat
+  where
+    dateBefore ident = diffUTCTime moment (getItemUTC' ident) > 0
+
 paginate:: UTCTime -> Maybe (Int, Int) -> (Int -> Int -> [Identifier] -> Rules ()) -> Rules ()
 paginate moment mlim rules = do
-    idents <- filter (dateBefore moment) <$> getMatches allPosts
+    idents <- getMatchesBefore moment allPosts
     let sorted      = sortBy (flip byDate) idents
         chunks      = case mlim of
             Just (itemsPerPage, pageLimit) ->
