@@ -155,7 +155,7 @@ main = do
 yuiCompressor :: Compiler (Item String)
 yuiCompressor = do
     path <- getResourceFilePath
-    makeItem $ unsafePerformIO $ readProcess "yui-compressor" [path] ""
+    makeItem $ unsafePerformIO $ readProcess "yuicompressor" [path] ""
 
 getItemUTC' :: Identifier -> UTCTime
 getItemUTC' id' =
