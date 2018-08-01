@@ -20,6 +20,11 @@ let haskellPackages = pkgs.haskell.packages.${compiler};
 in haskellPackages.developPackage {
   root = ./.;
 
+  overrides = self: super: with pkgs.haskell.lib; {
+    haddock-library =
+      doJailbreak (self.callHackage "haddock-library" "1.4.5" {});
+  };
+
   source-overrides = {
   };
 
