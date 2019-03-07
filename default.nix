@@ -1,9 +1,9 @@
-{ compiler    ? "ghc822"
+{ compiler    ? "ghc863"
 , doBenchmark ? false
 , doTracing   ? false
 , doStrict    ? false
-, rev         ? "d1ae60cbad7a49874310de91cd17708b042400c8"
-, sha256      ? "0a1w4702jlycg2ab87m7n8frjjngf0cis40lyxm3vdwn7p4fxikz"
+, rev         ? "a3b6b49eac91baa25a01ef10b74a7aeb89a963a1"
+, sha256      ? "1za2mvmc9nlxb91syd608fjrkm53rm658nflracy1js1a3nlaj06"
 , pkgs        ? import (builtins.fetchTarball {
     url = "https://github.com/NixOS/nixpkgs/archive/${rev}.tar.gz";
     inherit sha256; }) {
@@ -21,8 +21,6 @@ in haskellPackages.developPackage {
   root = ./.;
 
   overrides = self: super: with pkgs.haskell.lib; {
-    haddock-library =
-      doJailbreak (self.callHackage "haddock-library" "1.4.5" {});
   };
 
   source-overrides = {
