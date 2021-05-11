@@ -1,36 +1,30 @@
-{ compiler    ? "ghc882"
-, doBenchmark ? false
-, doTracing   ? false
-, doStrict    ? false
-, rev         ? "24c765c744ba856700db92ab94ef9c695d73f95f"
-, sha256      ? "0ak482k4jsnnmipmc038fla5ywr9h01xs91sjkx35wkkxcs2lc23"
-, pkgs        ? import (builtins.fetchTarball {
-    url = "https://github.com/NixOS/nixpkgs/archive/${rev}.tar.gz";
-    inherit sha256; }) {
-    config.allowUnfree = true;
-    config.allowBroken = false;
-  }
+{ compiler ? "ghc8104"
+
+, pkgs ? (import <darwin> {}).pkgs
+
+# , rev    ? "28c2c0156da98dbe553490f904da92ed436df134"
+# , sha256 ? "04f3qqjs5kd5pjmqxrngjrr72lly5azcr7njx71nv1942yq1vy2f"
+# , pkgs   ? import (builtins.fetchTarball {
+#     url = "https://github.com/NixOS/nixpkgs/archive/${rev}.tar.gz";
+#     inherit sha256; }) {
+#     config.allowUnfree = true;
+#   }
+
 , returnShellEnv ? pkgs.lib.inNixShell
-, mkDerivation ? null
-, yuicompressor ? pkgs.yuicompressor
+, mkDerivation   ? null
+, yuicompressor  ? pkgs.yuicompressor
 }:
 
-let haskellPackages = pkgs.haskell.packages.${compiler};
-
-in haskellPackages.developPackage {
-  root = ./.;
-
+let haskell = pkgs.haskell.packages.${compiler}.override {
   overrides = self: super: with pkgs.haskell.lib; {
+    pandoc          = dontCheck (doJailbreak (self.callHackage "pandoc" "2.11.4" {}));
+    hakyll          = unmarkBroken (doJailbreak super.hakyll);
     time-compat     = doJailbreak super.time-compat;
     time-recurrence = unmarkBroken (doJailbreak super.time-recurrence);
   };
+}; in
 
-  source-overrides = {
-  };
-
-  modifier = drv: pkgs.haskell.lib.overrideCabal drv (attrs: {
-    inherit doBenchmark;
-  });
-
+haskell.developPackage {
+  root = ./.;
   inherit returnShellEnv;
 }
