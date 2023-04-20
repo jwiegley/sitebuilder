@@ -29,5 +29,8 @@ Executable sitebuilder
     , pandoc-types
     , process
     , split
+    , text
     , time
+    , regex-posix
+    , syb
     , yaml

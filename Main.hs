@@ -1,26 +1,33 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternGuards #-}
+{-# LANGUAGE ViewPatterns #-}
 
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Main where
 
-import Control.Applicative
-import Control.Monad hiding (forM_)
-import Data.Aeson (FromJSON(..), Value(Object), (.:))
-import Data.Aeson.Types (typeMismatch)
-import Data.Foldable hiding (elem)
-import Data.List hiding (concatMap, any, all)
-import Data.List.Split hiding (oneOf)
-import Data.Maybe
-import Data.Monoid
-import Data.Time
-import Data.Yaml (decodeFile)
-import Hakyll
-import Prelude hiding (concatMap, any, all)
-import System.FilePath
-import System.IO.Unsafe (unsafePerformIO)
-import System.Process (readProcess)
+import           Control.Applicative
+import           Control.Monad hiding (forM_)
+import           Data.Aeson (FromJSON(..), Value(Object), (.:))
+import           Data.Aeson.Types (typeMismatch)
+import           Data.Foldable hiding (elem)
+import           Data.Generics (everywhereM, mkM)
+import           Data.List hiding (concatMap, any, all)
+import           Data.List.Split hiding (oneOf)
+import           Data.Maybe
+import           Data.Monoid
+import qualified Data.Text as T
+import           Data.Time
+import           Data.Yaml (decodeFileEither)
+import           Hakyll
+import           Prelude hiding (concatMap, any, all)
+import           System.Directory
+import           System.FilePath
+import           System.IO.Unsafe (unsafePerformIO)
+import           System.Process (readProcess)
+import qualified Text.Pandoc as P
+import           Text.Regex.Posix hiding (match, empty)
 
 main :: IO ()
 main = do
@@ -49,11 +56,15 @@ main = do
     posts <- getMatchesBefore now allPosts
     create posts $ do
         route wordpressRoute
-        compile $ pandocCompiler
+        compile $ pandocCompilerWithTransformM
+                    defaultHakyllReaderOptions
+                    defaultHakyllWriterOptions
+                    (unsafeCompiler . fixPostLinks)
             >>= saveSnapshot "teaser"
             >>= "templates/post.html" $$=
                 (tagsField "tags" tags <> postCtx)
             >>= saveSnapshot "content"
+            -- >>= relativizeUrls
             >>= loadForSite
 
     tagsRules tags $ \tag pat -> do
@@ -151,6 +162,45 @@ main = do
         , wpUrlField "url"
         , defaultContext
         ]
+
+fixPostLinks :: P.Pandoc -> IO P.Pandoc
+fixPostLinks = everywhereM (mkM fixPostLink)
+fixPostLink :: P.Inline -> IO P.Inline
+-- fixPostLink l@(P.Link as inl (T.unpack -> url, title))
+fixPostLink l@(P.Span (ident, ["spurious-link"], [("target", T.unpack -> url)])
+               [P.Emph title])
+  | AllTextSubmatches [_, result]
+      <- (url =~ ("^{% post_url (.+) %}$" :: String)) = do
+    mp <- findPosts result
+    case mp of
+      Nothing -> return l
+      Just p ->
+        let url' = if hasExtension p
+                   then replaceExtension ("/" </> p) "html"
+                   else "/" </> p </> "index.html"
+        in return $ P.Link (ident, [], []) title (T.pack url', stringify title)
+  | otherwise = return l
+fixPostLink x = return x
+
+stringify :: [P.Inline] -> T.Text
+stringify = P.queryWith go
+  where go :: P.Inline -> T.Text
+        go P.Space = " "
+        go (P.Str x) = x
+        go (P.Code _ x) = x
+        go (P.Math _ x) = x
+        go P.LineBreak = " "
+        go _ = ""
+
+findPosts :: String -> IO (Maybe FilePath)
+findPosts f = do
+  posts <- getDirectoryContents "posts"
+  results <- forM posts $ \post ->
+    pure $ case post =~ ("([0-9]+)-([0-9]+)-[0-9]+-" ++ f :: String) of
+             AllTextSubmatches [_, year, month] ->
+               [year ++ "/" ++ month ++ "/" ++ f]
+             _ -> []
+  pure $ listToMaybe (concat results)
 
 yuiCompressor :: Compiler (Item String)
 yuiCompressor = do
@@ -281,8 +331,8 @@ instance FromJSON FeedConfiguration where
 
 feedConfiguration :: FeedConfiguration
 feedConfiguration =
-    fromMaybe (error "Could not open or parse config.yaml file")
-        $ unsafePerformIO $ decodeFile "config.yaml"
+    either (error "Could not open or parse config.yaml file") id
+        $ unsafePerformIO $ decodeFileEither "config.yaml"
 
 feedContext :: Context String
 feedContext = mconcat
