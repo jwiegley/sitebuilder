@@ -1,0 +1,7 @@
+packages: .
+
+source-repository-package
+    type: git
+    location: vendor/hakyll
+    tag: 87bdee8ab61bf4a307d3d110e4cf8cefa92006c8
+    --sha256: sha256-+jyOtjJIJo6ggQsNqBS/re36fXom00M71neLa8dm/dM=
