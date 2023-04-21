@@ -29,6 +29,25 @@ import qualified Text.Pandoc as P
 import Text.Regex.Posix hiding (empty, match)
 import Prelude hiding (all, any, concatMap)
 
+($$=) :: Identifier -> Context a -> Item a -> Compiler (Item String)
+($$=) = loadAndApplyTemplate
+
+stringify :: [P.Inline] -> T.Text
+stringify = P.queryWith go
+  where
+    go :: P.Inline -> T.Text
+    go P.Space = " "
+    go (P.Str x) = x
+    go (P.Code _ x) = x
+    go (P.Math _ x) = x
+    go P.LineBreak = " "
+    go _ = ""
+
+yuiCompressor :: Compiler (Item String)
+yuiCompressor = do
+  path <- getResourceFilePath
+  makeItem $ unsafePerformIO $ readProcess "yuicompressor" [path] ""
+
 main :: IO ()
 main = do
   now <- getCurrentTime
@@ -55,7 +74,6 @@ main = do
       compile $
         myPandocCompiler
           >>= "templates/page.html" $$= defaultContext
-          >>= relativizeUrls
           >>= loadForSite
 
     tags <-
@@ -71,9 +89,8 @@ main = do
         myPandocCompiler
           >>= saveSnapshot "teaser"
           >>= "templates/post.html"
-            $$= (tagsField "filetags" tags <> postCtx)
+            $$= (tagsField "filetags" tags <> postCtxWithTags tags)
           >>= saveSnapshot "content"
-          >>= relativizeUrls
           >>= loadForSite
 
     tagsRules tags $ \tag pat -> do
@@ -86,10 +103,10 @@ main = do
         makeItem ""
           >>= "templates/archives.html"
             $$= ( constField "title" ("Posts tagged \"" ++ tag ++ "\"")
-                    <> listField "posts" postCtx (return ps)
+                    <> listField "posts" (postCtxWithTags tags) (return ps)
                     <> listField
                       "filetags"
-                      postCtx
+                      (postCtxWithTags tags)
                       ( return $
                           map (\x -> Item (fromFilePath (fst x)) (fst x)) $
                             tagsMap tags
@@ -112,7 +129,7 @@ main = do
               >>= "templates/list.html"
                 $$= ( listField
                         "posts"
-                        (field "teaser" teaserBody <> postCtx)
+                        (field "teaser" teaserBody <> postCtxWithTags tags)
                         ( forM itemsForPage $ \ident' ->
                             loadSnapshot ident' "teaser"
                               >>= wordpressifyUrls
@@ -143,14 +160,14 @@ main = do
             >>= "templates/archives.html"
               $$= ( listField
                       "posts"
-                      postCtx
+                      (postCtxWithTags tags)
                       ( forM itemsForPage $ \ident' ->
                           loadSnapshot ident' "teaser"
                             >>= wordpressifyUrls
                       )
                       <> listField
                         "filetags"
-                        postCtx
+                        (postCtxWithTags tags)
                         ( return $
                             map (\x -> Item (fromFilePath (fst x)) (fst x)) $
                               tagsMap tags
@@ -162,7 +179,7 @@ main = do
     create ["rss.xml"] $ do
       route idRoute
       compile $
-        renderRss feedConfiguration (postCtx <> feedContext)
+        renderRss feedConfiguration (postCtxWithTags tags <> feedContext)
           =<< return . take 10
           =<< recentFirst
           =<< traverse (`loadSnapshot` "content") posts
@@ -175,31 +192,34 @@ main = do
         let allEntries = return (pages ++ ps)
         let sitemapCtx =
               mconcat
-                [ listField "entries" postCtx allEntries,
+                [ listField "entries" (postCtxWithTags tags) allEntries,
                   defaultContext
                 ]
         makeItem ""
           >>= loadAndApplyTemplate "templates/sitemap.xml" sitemapCtx
           >>= wordpressifyUrls
   where
-    ($$=) = loadAndApplyTemplate
-
     loadForSite =
       "templates/meta.html" $$= defaultContext
         >=> wordpressifyUrls
+        >=> relativizeUrls
 
-    postCtx =
-      mconcat
-        [ dateField "date" "%B %e, %Y",
-          dateField "year" "%Y",
-          dateField "mon" "%m",
-          dateField "month" "%B",
-          dateField "day_" "%d",
-          dateField "day" "%e",
-          wpIdentField "ident",
-          wpUrlField "url",
-          defaultContext
-        ]
+postCtxWithTags :: Tags -> Context String
+postCtxWithTags tags = tagsField "tags" tags <> postCtx
+
+postCtx :: Context String
+postCtx =
+  mconcat
+    [ dateField "date" "%B %e, %Y",
+      dateField "year" "%Y",
+      dateField "mon" "%m",
+      dateField "month" "%B",
+      dateField "day_" "%d",
+      dateField "day" "%e",
+      wpIdentField "ident",
+      wpUrlField "url",
+      defaultContext
+    ]
 
 myPandocCompiler :: Compiler (Item String)
 myPandocCompiler =
@@ -237,17 +257,6 @@ fixPostLink
     | otherwise = return l
 fixPostLink x = return x
 
-stringify :: [P.Inline] -> T.Text
-stringify = P.queryWith go
-  where
-    go :: P.Inline -> T.Text
-    go P.Space = " "
-    go (P.Str x) = x
-    go (P.Code _ x) = x
-    go (P.Math _ x) = x
-    go P.LineBreak = " "
-    go _ = ""
-
 findPosts :: String -> IO (Maybe FilePath)
 findPosts f = do
   posts <- getDirectoryContents "posts"
@@ -257,25 +266,6 @@ findPosts f = do
         [year ++ "/" ++ month ++ "/" ++ f]
       _ -> []
   pure $ listToMaybe (concat results)
-
-yuiCompressor :: Compiler (Item String)
-yuiCompressor = do
-  path <- getResourceFilePath
-  makeItem $ unsafePerformIO $ readProcess "yuicompressor" [path] ""
-
-getItemUTC' :: Identifier -> UTCTime
-getItemUTC' id' =
-  fromMaybe empty' $
-    msum
-      [ parseTime' "%Y-%m-%d" $
-          intercalate "-" $
-            take 3 $
-              splitAll "-" fnCand
-        | fnCand <- reverse (splitDirectories (toFilePath id'))
-      ]
-  where
-    empty' = error $ "getItemUTC': " ++ "could not parse time for " ++ show id'
-    parseTime' = parseTimeM True defaultTimeLocale
 
 teaserBody :: Item String -> Compiler String
 teaserBody = return . extractTeaser . maxLengthTeaser . compactTeaser . itemBody
@@ -353,6 +343,24 @@ getMatchesBefore :: MonadMetadata m => UTCTime -> Pattern -> m [Identifier]
 getMatchesBefore moment pat = filter dateBefore <$> getMatches pat
   where
     dateBefore ident = diffUTCTime moment (getItemUTC' ident) > 0
+
+    getItemUTC' :: Identifier -> UTCTime
+    getItemUTC' id' =
+      fromMaybe empty' $
+        msum
+          [ parseTime' "%Y-%m-%d" $
+              intercalate "-" $
+                take 3 $
+                  splitAll "-" fnCand
+            | fnCand <- reverse (splitDirectories (toFilePath id'))
+          ]
+      where
+        empty' =
+          error $
+            "getItemUTC': "
+              ++ "could not parse time for "
+              ++ show id'
+        parseTime' = parseTimeM True defaultTimeLocale
 
 paginate ::
   UTCTime ->
