@@ -229,7 +229,11 @@ fixPostLink
                   if hasExtension p
                     then replaceExtension ("/" </> p) "html"
                     else "/" </> p </> "index.html"
-             in return $ P.Link (ident, [], []) title (T.pack url', stringify title)
+             in return $
+                  P.Link
+                    (ident, [], [])
+                    title
+                    (T.pack url', stringify title)
     | otherwise = return l
 fixPostLink x = return x
 
@@ -350,7 +354,11 @@ getMatchesBefore moment pat = filter dateBefore <$> getMatches pat
   where
     dateBefore ident = diffUTCTime moment (getItemUTC' ident) > 0
 
-paginate :: UTCTime -> Maybe (Int, Int) -> (Int -> Int -> [Identifier] -> Rules ()) -> Rules ()
+paginate ::
+  UTCTime ->
+  Maybe (Int, Int) ->
+  (Int -> Int -> [Identifier] -> Rules ()) ->
+  Rules ()
 paginate moment mlim rules = do
   idents <- getMatchesBefore moment allPosts
   let sorted = sortBy (flip byDate) idents
