@@ -26,6 +26,7 @@ import Data.Monoid
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Data.Time
+import Data.Time.Format.ISO8601
 import Data.Yaml (decodeFileEither)
 import Debug.Trace
 import Hakyll
@@ -56,7 +57,7 @@ main = do
           }
 
   hakyllWith config $ do
-    match "templates/*.html" $
+    match "templates/*" $
       compile templateCompiler
 
     match
@@ -73,13 +74,6 @@ main = do
       route idRoute
       compile yuiCompressor
 
-    match "pages/*.org" $ do
-      route $ metadataRoute (constRoute . getRouteFromMeta)
-      compile $
-        postPandocCompiler "pages"
-          >>= "templates/page.html" $$= defaultContext
-          >>= loadForSite
-
     tags <-
       buildTagsWith
         (getTagsByField "tags")
@@ -93,24 +87,21 @@ main = do
         postPandocCompiler "posts"
           >>= saveSnapshot "teaser"
           >>= "templates/post.html"
-            $$= (tagsField "tags" tags <> postCtxWithTags tags)
+            $$= postCtxWithTags tags
           >>= saveSnapshot "content"
           >>= loadForSite
 
     tagsRules tags $ \tag pat -> do
       route idRoute
       compile $ do
-        ps <-
-          recentFirst
-            =<< traverse load
-            =<< getMatchesBefore now pat
+        ps <- recentFirst =<< loadAll pat
         makeItem ""
           >>= "templates/archives.html"
             $$= ( constField "title" ("Posts tagged \"" ++ tag ++ "\"")
                     <> listField "posts" (postCtxWithTags tags) (return ps)
                     <> listField
                       "tags"
-                      (postCtxWithTags tags)
+                      postCtx
                       ( return $
                           map
                             (\x -> Item (fromFilePath (fst x)) (fst x))
@@ -174,7 +165,7 @@ main = do
                       )
                       <> listField
                         "tags"
-                        (postCtxWithTags tags)
+                        postCtx
                         ( return $
                             map (\x -> Item (fromFilePath (fst x)) (fst x)) $
                               tagsMap tags
@@ -182,6 +173,13 @@ main = do
                       <> defaultContext
                   )
             >>= loadForSite
+
+    match "pages/*.org" $ do
+      route $ metadataRoute (constRoute . getRouteFromMeta)
+      compile $
+        postPandocCompiler "pages"
+          >>= "templates/page.html" $$= defaultContext
+          >>= loadForSite
 
     create ["atom.xml"] $ do
       route idRoute
@@ -202,25 +200,33 @@ main = do
     create ["sitemap.xml"] $ do
       route idRoute
       compile $ do
-        ps <- recentFirst =<< traverse load posts
-        pages <- loadAll "pages/*.org"
+        pos <- recentFirst =<< traverse load posts
+        pas <- loadAll "pages/*.org"
         makeItem ("" :: String)
           >>= "templates/sitemap.xml"
             $$= ( listField
                     "entries"
                     postCtx
-                    (return $ ps ++ pages)
+                    (return $ pos ++ pas)
+                    <> siteCtx
+                    <> defaultContext
                 )
           >>= wordpressifyUrls
           >>= relativizeUrls
   where
     loadForSite =
-      "templates/meta.html" $$= defaultContext
+      "templates/meta.html"
+        $$= (siteCtx <> defaultContext)
         >=> wordpressifyUrls
         >=> relativizeUrls
 
-    postCtxWithTags :: Tags -> Context String
-    postCtxWithTags tags = tagsField "tags" tags <> postCtx
+    siteCtx :: Context String
+    siteCtx =
+      mconcat
+        [ constField "root" (feedRoot feedConfiguration),
+          constField "title" (feedTitle feedConfiguration),
+          constField "description" (feedDescription feedConfiguration)
+        ]
 
     postCtx :: Context String
     postCtx =
@@ -233,8 +239,13 @@ main = do
           dateField "day" "%e",
           wpIdentField "ident",
           wpUrlField "url",
+          metadataField,
+          siteCtx,
           defaultContext
         ]
+
+    postCtxWithTags :: Tags -> Context String
+    postCtxWithTags tags = tagsField "tags" tags <> postCtx
 
     postPandocCompiler :: FilePath -> Compiler (Item String)
     postPandocCompiler dir =
@@ -428,17 +439,18 @@ pandocMetadata file = do
       -- The 'Semigroup' operation for 'Map' is 'union', which prefers values
       -- from the left operand.
       metadata = cleanupMetadata (meta <> furtherMetadata)
-      result = buildMetadata (P.Meta metadata)
+      result = buildMetadata file (P.Meta metadata)
   -- putStrLn $ "result = " ++ ppShow result
   pure result
 
-buildMetadata :: P.Meta -> Metadata
-buildMetadata meta@(P.Meta metadata) =
+buildMetadata :: FilePath -> P.Meta -> Metadata
+buildMetadata file meta@(P.Meta metadata) =
   AT.fromList $
     map (\(f, t) -> (AT.fromString f, AT.String t)) $
       filter (not . T.null . snd) $
         map (\(f, ex, wr) -> (f, inlinesTo wr (ex meta))) $
           [ ("published", publishDateOrDocDate, P.writePlain),
+            ("updated", updatedDate file, P.writePlain),
             ("route", publishRoute, P.writePlain)
           ]
             ++ M.foldMapWithKey
@@ -514,6 +526,16 @@ publishDate meta =
         [P.Str s] | Just date <- orgDateToIso s -> [P.Str date]
         _ -> []
 
+updatedDate :: FilePath -> P.Meta -> [P.Inline]
+updatedDate file meta =
+  case metaField "updated" meta of
+    [P.Str s] | Just date <- orgDateToIso s -> [P.Str date]
+    _ -> case publishDateOrDocDate meta of
+      [] -> unsafePerformIO $ do
+        lastModified <- getModificationTime file
+        pure [P.Str (T.pack (formatShow iso8601Format (utctDay lastModified)))]
+      date -> date
+
 findPostByUuid :: FilePath -> String -> IO (Maybe FilePath)
 findPostByUuid dir (map toLower -> uuid) = do
   posts <- getDirectoryContents dir
@@ -552,14 +574,14 @@ inlinesTo wr ill =
 stringify :: [P.Inline] -> T.Text
 stringify = inlinesTo P.writePlain
 
--- Maybe convert an Org date of form [YYYY-MM-DD WWW HH:MM] to a date of the
--- form YYYY-MM-DD HH:MM:00.
+-- Maybe convert an Org date of form [YYYY-MM-DD WWW( HH:MM)?] to a date of the
+-- form YYYY-MM-DD.
 orgDateToIso :: T.Text -> Maybe T.Text
 orgDateToIso (T.unpack -> date) =
   case date
     =~ ( "\\[([0-9]+)-([0-9]+)-([0-9]+) [A-Za-z]+( [0-9:]+)?\\]" ::
            String
        ) of
-    AllTextSubmatches [_, year, month, day, time] ->
-      Just $ T.pack $ mconcat [year, "-", month, "-", day, time, ":00"]
+    AllTextSubmatches [_, year, month, day, _time] ->
+      Just $ T.pack $ mconcat [year, "-", month, "-", day]
     _ -> Nothing
