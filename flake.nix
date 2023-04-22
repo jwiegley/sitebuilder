@@ -2,7 +2,7 @@
   description = "My Hakyll site generator";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs?rev=4d2b37a84fad1091b9de401eb450aae66f1a741e";
+    nixpkgs.url = "github:NixOS/nixpkgs?rev=bb2009ca185d97813e75736c2b8d1d8bb81bde05";
     haskellNix.url = "github:input-output-hk/haskell.nix";
     flake-utils.url = "github:numtide/flake-utils";
   };
@@ -20,10 +20,11 @@
       };
       overlays = [ haskellNix.overlay
         (final: prev: {
+          hakyll = (import ./vendor/hakyll).default;
           sitebuilder =
             final.haskell-nix.project' {
               src = ./.;
-              compiler-nix-name = "ghc961";
+              compiler-nix-name = "ghc944";
               shell.tools = {
                 cabal = {};
                 # hlint = {};

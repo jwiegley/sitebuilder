@@ -1,7 +1,8 @@
-packages: .
+packages: ./*.cabal
+optional-packages: vendor/*/*.cabal
 
-source-repository-package
-    type: git
-    location: vendor/hakyll
-    tag: 87bdee8ab61bf4a307d3d110e4cf8cefa92006c8
-    --sha256: sha256-+jyOtjJIJo6ggQsNqBS/re36fXom00M71neLa8dm/dM=
+-- source-repository-package
+--     type: git
+--     location: file:///Users/johnw/src/sitebuilder/vendor/hakyll.git
+--     tag: ff8e44674d74c5e2abd8171aa3dba8e204231399
+--     --sha256: sha256-+jyOtjJIJo7ggQsNqBS/re36fXom00M71neLa8dm/dM=

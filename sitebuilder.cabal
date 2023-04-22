@@ -20,17 +20,19 @@ Executable sitebuilder
       base         >= 4.6
     , aeson
     , binary
+    , containers
     , directory    >= 1.2
     , exceptions
     , filepath     >= 1.3
-    , hakyll       >= 4.15.1.1
+    , hakyll       >= 4.15.1.2
     , old-locale
     , pandoc       >= 2.11 && < 2.20 || >= 3.0 && < 3.2
     , pandoc-types
+    , pretty-show
     , process
+    , regex-posix
     , split
+    , syb
     , text
     , time
-    , regex-posix
-    , syb
     , yaml
