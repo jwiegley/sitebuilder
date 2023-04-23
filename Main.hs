@@ -124,7 +124,7 @@ main = do
 
   let config =
         defaultConfiguration
-          { provideMetadata = pandocMetadata,
+          { provideMetadata = pandocMetadata (Just (siteName siteConfig)),
             inMemoryCache = True,
             deployCommand = siteDeploy siteConfig
           }
@@ -334,9 +334,12 @@ siteRules now site@SiteConfiguration {..} = do
         fixPostLinks :: P.Pandoc -> IO P.Pandoc
         fixPostLinks = everywhereM (mkM fixPostLink)
 
+        -- Fixup Org-roam links to refer the intended document by its route.
         fixPostLink :: P.Inline -> IO P.Inline
         fixPostLink l@(P.Link as title (T.unpack -> url, title'))
           | AllTextSubmatches [_, uuid] <- (url =~ ("^id:(.+)$" :: String)) = do
+              -- Within the [Identifier] gives by entries, find one whose
+              -- metadata id == uuid.
               findEntryByUuid entries uuid <&> \case
                 Nothing -> l
                 Just path ->
@@ -421,8 +424,19 @@ itemUTC ident =
           ++ show ident
     parseTime = parseTimeM True defaultTimeLocale
 
-getMatchesBefore :: MonadMetadata m => UTCTime -> Pattern -> m [Identifier]
-getMatchesBefore moment pat = filter dateBefore <$> getMatches pat
+getMatchesBefore ::
+  (MonadMetadata m, MonadFail m) =>
+  UTCTime ->
+  Pattern ->
+  m [Identifier]
+getMatchesBefore moment pat =
+  filterM
+    ( \i -> do
+        let seen = dateBefore i
+        published <- getMetadataField i "published"
+        pure $ seen && isJust published
+    )
+    =<< getMatches pat
   where
     dateBefore ident = diffUTCTime moment (itemUTC ident) > 0
 
@@ -478,8 +492,8 @@ rssBodyField root key =
 {------------------------------------------------------------------------}
 -- Metadata
 
-pandocMetadata :: FilePath -> IO Metadata
-pandocMetadata file = do
+pandocMetadata :: Maybe String -> FilePath -> IO Metadata
+pandocMetadata mname file = do
   P.Pandoc (P.Meta meta) blocks <- do
     cnt <- TIO.readFile file
     case P.runPure $ P.readOrg P.def cnt of
@@ -499,7 +513,7 @@ pandocMetadata file = do
             blocks
       -- The 'Semigroup' operation for 'Map' is 'union', which prefers values
       -- from the left operand.
-      metadata = cleanupMetadata (meta <> furtherMetadata)
+      metadata = cleanupMetadata mname (meta <> furtherMetadata)
       result = buildMetadata file (P.Meta metadata)
   -- putStrLn $ "result = " ++ ppShow result
   pure result
@@ -510,7 +524,7 @@ buildMetadata file meta@(P.Meta metadata) =
     map (\(f, t) -> (AT.fromString f, AT.String t)) $
       filter (not . T.null . snd) $
         map (\(f, ex, wr) -> (f, inlinesTo wr (ex meta))) $
-          [ ("published", publishDateOrDocDate, P.writePlain),
+          [ ("published", publishDate, P.writePlain),
             ("edited", editedDate file, P.writePlain),
             ("route", publishRoute, P.writePlain)
           ]
@@ -518,8 +532,11 @@ buildMetadata file meta@(P.Meta metadata) =
               (\k _ -> [(T.unpack k, metaField k, P.writePlain)])
               metadata
 
-cleanupMetadata :: M.Map T.Text P.MetaValue -> M.Map T.Text P.MetaValue
-cleanupMetadata meta = M.foldMapWithKey ((M.fromList .) . go) meta
+cleanupMetadata ::
+  Maybe String ->
+  M.Map T.Text P.MetaValue ->
+  M.Map T.Text P.MetaValue
+cleanupMetadata mname meta = M.foldMapWithKey ((M.fromList .) . go) meta
   where
     fixTitle (T.unpack -> value) =
       [ ( "title",
@@ -533,19 +550,24 @@ cleanupMetadata meta = M.foldMapWithKey ((M.fromList .) . go) meta
     go "title" (P.MetaString value) = fixTitle value
     go "title" (P.MetaInlines ils) = fixTitle (inlinesTo P.writePlain ils)
     go "filetags" (P.MetaString value) =
-      [ ( "tags",
-          P.MetaString
-            ( T.intercalate ", "
-                . filter
-                  ( \(T.unpack -> s) ->
-                      not (s =~ ("^publish=" :: String))
-                  )
-                . filter (not . T.null)
-                . T.splitOn ":"
-                $ value
-            )
+      [ ( "shouldPublish",
+          P.MetaBool (T.unpack value =~ (":publish=" ++ name ++ ":" :: String))
         )
+        | Just name <- [mname]
       ]
+        ++ [ ( "tags",
+               P.MetaString
+                 ( T.intercalate ", "
+                     . filter
+                       ( \(T.unpack -> s) ->
+                           not (s =~ ("^publish=" :: String))
+                       )
+                     . filter (not . T.null)
+                     . T.splitOn ":"
+                     $ value
+                 )
+             )
+           ]
     go key value = [(key, value)]
 
 publishRoute :: P.Meta -> [P.Inline]
@@ -580,12 +602,15 @@ publishDateOrDocDate meta =
 
 publishDate :: P.Meta -> [P.Inline]
 publishDate meta =
-  case metaField "publish" meta of
-    [P.Str s] | Just date <- orgDateToIso s -> [P.Str date]
-    _ ->
-      case metaField "created" meta of
+  case P.lookupMeta "shouldPublish" meta of
+    Just (P.MetaBool True) ->
+      case metaField "publish" meta of
         [P.Str s] | Just date <- orgDateToIso s -> [P.Str date]
-        _ -> []
+        _ ->
+          case metaField "created" meta of
+            [P.Str s] | Just date <- orgDateToIso s -> [P.Str date]
+            _ -> []
+    _ -> []
 
 editedDate :: FilePath -> P.Meta -> [P.Inline]
 editedDate file meta =
@@ -598,7 +623,7 @@ editedDate file meta =
       date -> date
 
 withMetadata :: (Metadata -> r) -> FilePath -> IO r
-withMetadata f path = f <$> pandocMetadata path
+withMetadata f path = f <$> pandocMetadata Nothing path
 
 firstMatching :: Monad m => [a] -> (a -> m (Maybe b)) -> m (Maybe b)
 firstMatching [] _ = pure Nothing
