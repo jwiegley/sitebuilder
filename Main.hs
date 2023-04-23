@@ -2,6 +2,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternGuards #-}
+{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
@@ -28,7 +29,7 @@ import qualified Data.Text.IO as TIO
 import Data.Time
 import Data.Time.Format.ISO8601
 import Data.Yaml (decodeFileEither)
-import Debug.Trace
+-- import Debug.Trace
 import Hakyll
 import System.Directory
 import System.FilePath
@@ -36,8 +37,76 @@ import System.IO.Unsafe (unsafePerformIO)
 import System.Process (readProcess)
 import qualified Text.Pandoc as P
 import Text.Regex.Posix hiding (empty, match)
-import Text.Show.Pretty
+-- import Text.Show.Pretty
 import Prelude hiding (all, any, concatMap)
+
+data SiteConfiguration = SiteConfiguration
+  { siteTitle :: String, -- Title of the site
+    siteDescription :: String, -- Description of the site
+    siteAuthorName :: String, -- Name of the site author
+    siteAuthorEmail :: String, -- Email of the site author
+    siteRoot :: String, -- Root URI of the site
+    siteName :: String, -- If the site at foo.com, then foo
+    siteDeploy :: String, -- Deploy command, replace %s with name
+    siteAnalytics :: String, -- Google Analytics Id
+    siteDisqus :: String, -- Disqus domainname
+    siteContentDir :: String, -- Path to pages, posts, drafts
+    siteDir :: String -- Path to templates and other files
+  }
+
+instance FromJSON SiteConfiguration where
+  parseJSON (Object v) =
+    SiteConfiguration
+      <$> v .: "title"
+      <*> v .: "description"
+      <*> v .: "authorName"
+      <*> v .: "authorEmail"
+      <*> v .: "root"
+      <*> v .: "name"
+      <*> v .: "deploy"
+      <*> v .: "analytics"
+      <*> v .: "disqus"
+      <*> v .: "contentDir"
+      <*> v .: "siteDir"
+  parseJSON invalid = typeMismatch "SiteConfiguration" invalid
+
+readSiteConfiguration :: FilePath -> IO SiteConfiguration
+readSiteConfiguration file = do
+  eres <- decodeFileEither file
+  case eres of
+    Left err ->
+      error $
+        "Could not open or parse "
+          ++ file
+          ++ " file: "
+          ++ show err
+    Right conf -> pure conf
+
+feedConfigurationFromSite :: SiteConfiguration -> FeedConfiguration
+feedConfigurationFromSite SiteConfiguration {..} =
+  FeedConfiguration
+    { feedTitle = siteTitle,
+      feedDescription = siteDescription,
+      feedAuthorName = siteAuthorName,
+      feedAuthorEmail = siteAuthorEmail,
+      feedRoot = siteRoot
+    }
+
+siteCtx :: SiteConfiguration -> Context String
+siteCtx SiteConfiguration {..} =
+  mconcat
+    [ constField "title" siteTitle,
+      constField "description" siteDescription,
+      constField "authorName" siteAuthorName,
+      constField "authorEmail" siteAuthorEmail,
+      constField "root" siteRoot,
+      constField "name" siteName,
+      constField "deploy" siteDeploy,
+      constField "analytics" siteAnalytics,
+      constField "disqus" siteDisqus,
+      constField "contentDir" siteContentDir,
+      constField "siteDir" siteDir
+    ]
 
 ($$=) :: Identifier -> Context a -> Item a -> Compiler (Item String)
 ($$=) = loadAndApplyTemplate
@@ -51,182 +120,190 @@ main :: IO ()
 main = do
   now <- getCurrentTime
 
+  siteConfig <- readSiteConfiguration "config.yaml"
+
   let config =
         defaultConfiguration
-          { provideMetadata = pandocMetadata
+          { provideMetadata = pandocMetadata,
+            inMemoryCache = True,
+            deployCommand = siteDeploy siteConfig
           }
 
-  hakyllWith config $ do
-    match "templates/*" $
-      compile templateCompiler
+  hakyllWith config (siteRules now siteConfig)
 
-    match
-      ( "files/**"
-          .||. "images/**"
-          .||. "favicon.ico"
-          .||. "robots.txt"
-      )
-      $ do
-        route idRoute
-        compile copyFileCompiler
+siteRules :: UTCTime -> SiteConfiguration -> Rules ()
+siteRules now site@SiteConfiguration {..} = do
+  match "templates/*" $
+    compile templateCompiler
 
-    match ("css/*.css" .||. "js/*.js") $ do
+  match
+    ( "files/**"
+        .||. "images/**"
+        .||. "favicon.ico"
+        .||. "robots.txt"
+    )
+    $ do
       route idRoute
-      compile yuiCompressor
+      compile copyFileCompiler
 
-    tags <-
-      buildTagsWith
-        (getTagsByField "tags")
-        "posts/*.org"
-        (fromCapture "tags/*/index.html")
+  match ("css/*.css" .||. "js/*.js") $ do
+    route idRoute
+    compile yuiCompressor
 
-    posts <- getMatchesBefore now "posts/*.org"
-    create posts $ do
-      route $ metadataRoute (constRoute . getRouteFromMeta)
-      compile $
-        postPandocCompiler "posts"
-          >>= saveSnapshot "teaser"
-          >>= "templates/post.html"
-            $$= postCtxWithTags tags
-          >>= saveSnapshot "content"
-          >>= loadForSite
+  tags <-
+    buildTagsWith
+      (getTagsByField "tags")
+      "posts/*.org"
+      (fromCapture "tags/*/index.html")
 
-    tagsRules tags $ \tag pat -> do
-      route idRoute
-      compile $ do
-        ps <- recentFirst =<< loadAll pat
-        makeItem ""
-          >>= "templates/archives.html"
-            $$= ( constField "title" ("Posts tagged \"" ++ tag ++ "\"")
-                    <> listField "posts" (postCtxWithTags tags) (return ps)
-                    <> listField
-                      "tags"
-                      postCtx
-                      ( return $
-                          map
-                            (\x -> Item (fromFilePath (fst x)) (fst x))
-                            (tagsMap tags)
-                      )
-                    <> defaultContext
-                )
-          >>= loadForSite
+  posts <- getMatchesBefore now "posts/*.org"
+  match (fromList posts) $ do
+    route $ metadataRoute (constRoute . getRouteFromMeta)
+    compile $
+      postPandocCompiler posts
+        >>= saveSnapshot "teaser"
+        >>= "templates/post.html"
+          $$= postCtxWithTags tags
+        >>= saveSnapshot "content"
+        >>= loadForSite
 
-    paginate now (Just (6, 10)) $ \idx maxIndex itemsForPage ->
-      create
-        [ fromFilePath $
-            if idx == 1
-              then "index.html"
-              else "page/" ++ show idx ++ "/index.html"
-        ]
-        $ do
-          route idRoute
-          compile $
-            makeItem ""
-              >>= "templates/list.html"
-                $$= ( listField
-                        "posts"
-                        (field "teaser" teaserBody <> postCtxWithTags tags)
-                        ( forM itemsForPage $ \ident' ->
-                            loadSnapshot ident' "teaser"
-                              >>= wordpressifyUrls
-                              >>= relativizeUrls
-                        )
-                        <> ( if idx == 1
-                               then constField "isFirst" "true"
-                               else mempty
-                           )
-                        <> ( if idx == 2
-                               then constField "isSecond" "true"
-                               else mempty
-                           )
-                        <> ( if idx == maxIndex
-                               then constField "isLast" "true"
-                               else mempty
-                           )
-                        <> constField "nextIndex" (show (succ idx))
-                        <> constField "prevIndex" (show (pred idx))
-                        <> defaultContext
+  tagsRules tags $ \tag pat -> do
+    route idRoute
+    compile $ do
+      ps <- recentFirst =<< loadAll pat
+      makeItem ""
+        >>= "templates/archives.html"
+          $$= ( constField "title" ("Posts tagged \"" ++ tag ++ "\"")
+                  <> listField "posts" (postCtxWithTags tags) (return ps)
+                  <> listField
+                    "tags"
+                    postCtx
+                    ( return $
+                        map
+                          (\x -> Item (fromFilePath (fst x)) (fst x))
+                          (tagsMap tags)
                     )
-              >>= loadForSite
+                  <> defaultContext
+              )
+        >>= loadForSite
 
-    paginate now Nothing $ \_ _ itemsForPage ->
-      create [fromFilePath "archives/index.html"] $ do
+  paginate now (Just (6, 10)) $ \idx maxIndex itemsForPage ->
+    create
+      [ fromFilePath $
+          if idx == 1
+            then "index.html"
+            else "page/" ++ show idx ++ "/index.html"
+      ]
+      $ do
         route idRoute
         compile $
           makeItem ""
-            >>= "templates/archives.html"
+            >>= "templates/list.html"
               $$= ( listField
                       "posts"
-                      (postCtxWithTags tags)
+                      (field "teaser" teaserBody <> postCtxWithTags tags)
                       ( forM itemsForPage $ \ident' ->
                           loadSnapshot ident' "teaser"
                             >>= wordpressifyUrls
                             >>= relativizeUrls
                       )
-                      <> listField
-                        "tags"
-                        postCtx
-                        ( return $
-                            map (\x -> Item (fromFilePath (fst x)) (fst x)) $
-                              tagsMap tags
-                        )
+                      <> ( if idx == 1
+                             then constField "isFirst" "true"
+                             else mempty
+                         )
+                      <> ( if idx == 2
+                             then constField "isSecond" "true"
+                             else mempty
+                         )
+                      <> ( if idx == maxIndex
+                             then constField "isLast" "true"
+                             else mempty
+                         )
+                      <> constField "nextIndex" (show (succ idx))
+                      <> constField "prevIndex" (show (pred idx))
                       <> defaultContext
                   )
             >>= loadForSite
 
-    match "pages/*.org" $ do
-      route $ metadataRoute (constRoute . getRouteFromMeta)
-      compile $
-        postPandocCompiler "pages"
-          >>= "templates/page.html" $$= defaultContext
-          >>= loadForSite
-
-    create ["atom.xml"] $ do
-      route idRoute
-      compile $ do
-        renderAtom feedConfiguration (postCtxWithTags tags <> feedContext)
-          =<< return . take 10
-          =<< recentFirst
-          =<< traverse (`loadSnapshot` "content") posts
-
-    create ["rss.xml"] $ do
+  paginate now Nothing $ \_ _ itemsForPage ->
+    create ["archives/index.html"] $ do
       route idRoute
       compile $
-        renderRss feedConfiguration (postCtxWithTags tags <> feedContext)
-          =<< return . take 10
-          =<< recentFirst
-          =<< traverse (`loadSnapshot` "content") posts
-
-    create ["sitemap.xml"] $ do
-      route idRoute
-      compile $ do
-        pos <- recentFirst =<< traverse load posts
-        pas <- loadAll "pages/*.org"
-        makeItem ("" :: String)
-          >>= "templates/sitemap.xml"
+        makeItem ""
+          >>= "templates/archives.html"
             $$= ( listField
-                    "entries"
-                    postCtx
-                    (return $ pos ++ pas)
-                    <> siteCtx
+                    "posts"
+                    (postCtxWithTags tags)
+                    ( forM itemsForPage $ \ident' ->
+                        loadSnapshot ident' "teaser"
+                          >>= wordpressifyUrls
+                          >>= relativizeUrls
+                    )
+                    <> listField
+                      "tags"
+                      postCtx
+                      ( return $
+                          map (\x -> Item (fromFilePath (fst x)) (fst x)) $
+                            tagsMap tags
+                      )
                     <> defaultContext
                 )
-          >>= wordpressifyUrls
-          >>= relativizeUrls
+          >>= loadForSite
+
+  pages <- getMatches "pages/*.org"
+  match (fromList pages) $ do
+    route $ metadataRoute (constRoute . getRouteFromMeta)
+    compile $
+      postPandocCompiler pages
+        >>= "templates/page.html" $$= defaultContext
+        >>= loadForSite
+
+  create ["atom.xml"] $ do
+    route idRoute
+    compile $ do
+      renderAtom
+        (feedConfigurationFromSite site)
+        ( postCtxWithTags tags
+            <> feedContext siteRoot
+        )
+        =<< return . take 10
+        =<< recentFirst
+        =<< traverse (`loadSnapshot` "content") posts
+
+  create ["rss.xml"] $ do
+    route idRoute
+    compile $
+      renderRss
+        (feedConfigurationFromSite site)
+        ( postCtxWithTags tags
+            <> feedContext siteRoot
+        )
+        =<< return . take 10
+        =<< recentFirst
+        =<< traverse (`loadSnapshot` "content") posts
+
+  create ["sitemap.xml"] $ do
+    route idRoute
+    compile $ do
+      pos <- recentFirst =<< traverse load posts
+      pas <- loadAll "pages/*.org"
+      makeItem ("" :: String)
+        >>= "templates/sitemap.xml"
+          $$= ( listField
+                  "entries"
+                  postCtx
+                  (return $ pos ++ pas)
+                  <> siteCtx site
+                  <> defaultContext
+              )
+        >>= wordpressifyUrls
+        >>= relativizeUrls
   where
     loadForSite =
       "templates/meta.html"
-        $$= (siteCtx <> defaultContext)
+        $$= (siteCtx site <> defaultContext)
         >=> wordpressifyUrls
         >=> relativizeUrls
-
-    siteCtx :: Context String
-    siteCtx =
-      mconcat
-        [ constField "root" (feedRoot feedConfiguration),
-          constField "title" (feedTitle feedConfiguration),
-          constField "description" (feedDescription feedConfiguration)
-        ]
 
     postCtx :: Context String
     postCtx =
@@ -240,15 +317,15 @@ main = do
           wpIdentField "ident",
           wpUrlField "url",
           metadataField,
-          siteCtx,
+          siteCtx site,
           defaultContext
         ]
 
     postCtxWithTags :: Tags -> Context String
     postCtxWithTags tags = tagsField "tags" tags <> postCtx
 
-    postPandocCompiler :: FilePath -> Compiler (Item String)
-    postPandocCompiler dir =
+    postPandocCompiler :: [Identifier] -> Compiler (Item String)
+    postPandocCompiler entries =
       pandocCompilerWithTransformM
         defaultHakyllReaderOptions
         defaultHakyllWriterOptions
@@ -260,7 +337,7 @@ main = do
         fixPostLink :: P.Inline -> IO P.Inline
         fixPostLink l@(P.Link as title (T.unpack -> url, title'))
           | AllTextSubmatches [_, uuid] <- (url =~ ("^id:(.+)$" :: String)) = do
-              findPostByUuid dir uuid <&> \case
+              findEntryByUuid entries uuid <&> \case
                 Nothing -> l
                 Just path ->
                   P.Link
@@ -371,27 +448,11 @@ paginate moment mlim rules = do
 {------------------------------------------------------------------------}
 -- RSS/Atom feed
 
-instance FromJSON FeedConfiguration where
-  parseJSON (Object v) =
-    FeedConfiguration
-      <$> v .: "title"
-      <*> v .: "description"
-      <*> v .: "authorName"
-      <*> v .: "authorEmail"
-      <*> v .: "root"
-  parseJSON invalid = typeMismatch "FeedConfiguration" invalid
-
-feedConfiguration :: FeedConfiguration
-feedConfiguration =
-  either (error "Could not open or parse config.yaml file") id $
-    unsafePerformIO $
-      decodeFileEither "config.yaml"
-
-feedContext :: Context String
-feedContext =
+feedContext :: String -> Context String
+feedContext root =
   mconcat
     [ rssTitleField "title",
-      rssBodyField "description"
+      rssBodyField root "description"
     ]
 
 rssTitleField :: String -> Context String
@@ -399,8 +460,8 @@ rssTitleField key = field key $ \i -> do
   value <- getMetadataField (itemIdentifier i) "title"
   maybe empty return $ replaceAll "&" (const "&amp;") <$> value
 
-rssBodyField :: String -> Context String
-rssBodyField key =
+rssBodyField :: String -> String -> Context String
+rssBodyField root key =
   field key $
     return
       . replaceAll "<iframe [^>]*>" (const "")
@@ -411,7 +472,7 @@ rssBodyField key =
     wordpress = replaceAll "/index.html" (const "/")
 
     absolute x
-      | head x == '/' = feedRoot feedConfiguration ++ x
+      | head x == '/' = root ++ x
       | otherwise = x
 
 {------------------------------------------------------------------------}
@@ -450,7 +511,7 @@ buildMetadata file meta@(P.Meta metadata) =
       filter (not . T.null . snd) $
         map (\(f, ex, wr) -> (f, inlinesTo wr (ex meta))) $
           [ ("published", publishDateOrDocDate, P.writePlain),
-            ("updated", updatedDate file, P.writePlain),
+            ("edited", editedDate file, P.writePlain),
             ("route", publishRoute, P.writePlain)
           ]
             ++ M.foldMapWithKey
@@ -526,9 +587,9 @@ publishDate meta =
         [P.Str s] | Just date <- orgDateToIso s -> [P.Str date]
         _ -> []
 
-updatedDate :: FilePath -> P.Meta -> [P.Inline]
-updatedDate file meta =
-  case metaField "updated" meta of
+editedDate :: FilePath -> P.Meta -> [P.Inline]
+editedDate file meta =
+  case metaField "edited" meta of
     [P.Str s] | Just date <- orgDateToIso s -> [P.Str date]
     _ -> case publishDateOrDocDate meta of
       [] -> unsafePerformIO $ do
@@ -536,20 +597,30 @@ updatedDate file meta =
         pure [P.Str (T.pack (formatShow iso8601Format (utctDay lastModified)))]
       date -> date
 
-findPostByUuid :: FilePath -> String -> IO (Maybe FilePath)
-findPostByUuid dir (map toLower -> uuid) = do
-  posts <- getDirectoryContents dir
-  results <- forM posts $ \post -> do
-    if takeExtension post == ".org"
-      then do
-        meta <- pandocMetadata (dir </> post)
-        pure $ case lookupString "id" meta of
-          Just (map toLower -> postUuid)
-            | uuid == postUuid ->
-                maybeToList (lookupString "route" meta)
-          _ -> []
-      else pure []
-  pure $ listToMaybe (concat results)
+withMetadata :: (Metadata -> r) -> FilePath -> IO r
+withMetadata f path = f <$> pandocMetadata path
+
+firstMatching :: Monad m => [a] -> (a -> m (Maybe b)) -> m (Maybe b)
+firstMatching [] _ = pure Nothing
+firstMatching (x : xs) f =
+  f x >>= \case
+    Nothing -> firstMatching xs f
+    res -> pure res
+
+findEntryByUuid :: [Identifier] -> String -> IO (Maybe FilePath)
+findEntryByUuid entries (map toLower -> uuid) = do
+  firstMatching entries $ \entry -> do
+    let path = toFilePath entry
+    if takeExtension path == ".org"
+      then withMetadata hasUuid path
+      else pure Nothing
+  where
+    -- If this post has the uuid we're looking for, return its route.
+    hasUuid :: Metadata -> Maybe FilePath
+    hasUuid meta = case lookupString "id" meta of
+      Just (map toLower -> postUuid)
+        | uuid == postUuid -> lookupString "route" meta
+      _ -> Nothing
 
 metaField :: T.Text -> P.Meta -> [P.Inline]
 metaField name meta =
