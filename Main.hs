@@ -141,7 +141,6 @@ siteRules now site@SiteConfiguration {..} = do
     ( "files/**"
         .||. "images/**"
         .||. "favicon.ico"
-        .||. "robots.txt"
     )
     $ do
       route idRoute
@@ -257,6 +256,8 @@ siteRules now site@SiteConfiguration {..} = do
       postPandocCompiler pages
         >>= "templates/page.html" $$= defaultContext
         >>= loadForSite
+        >>= wordpressifyUrls
+        >>= relativizeUrls
 
   create ["atom.xml"] $ do
     route idRoute
@@ -282,6 +283,12 @@ siteRules now site@SiteConfiguration {..} = do
         =<< recentFirst
         =<< traverse (`loadSnapshot` "content") posts
 
+  create ["robots.txt"] $ do
+    route idRoute
+    compile $ do
+      makeItem ("" :: String)
+        >>= "templates/robots.txt" $$= (siteCtx site <> defaultContext)
+
   create ["sitemap.xml"] $ do
     route idRoute
     compile $ do
@@ -296,8 +303,6 @@ siteRules now site@SiteConfiguration {..} = do
                   <> siteCtx site
                   <> defaultContext
               )
-        >>= wordpressifyUrls
-        >>= relativizeUrls
   where
     loadForSite =
       "templates/meta.html"
