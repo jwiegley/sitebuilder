@@ -3,6 +3,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternGuards #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE TupleSections #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
@@ -156,7 +157,7 @@ siteRules now site@SiteConfiguration {..} = do
       "posts/*.org"
       (fromCapture "tags/*/index.html")
 
-  posts <- getMatchesBefore now "posts/*.org"
+  posts <- getMatchesToPublishBefore now "posts/*.org"
   match (fromList posts) $ do
     route $ metadataRoute (constRoute . getRouteFromMeta)
     compile $
@@ -187,7 +188,7 @@ siteRules now site@SiteConfiguration {..} = do
               )
         >>= loadForSite
 
-  paginate now (Just (6, 10)) $ \idx maxIndex itemsForPage ->
+  paginate posts 6 10 $ \idx maxIndex itemsForPage ->
     create
       [ fromFilePath $
           if idx == 1
@@ -225,30 +226,29 @@ siteRules now site@SiteConfiguration {..} = do
                   )
             >>= loadForSite
 
-  paginate now Nothing $ \_ _ itemsForPage ->
-    create ["archives/index.html"] $ do
-      route idRoute
-      compile $
-        makeItem ""
-          >>= "templates/archives.html"
-            $$= ( listField
-                    "posts"
-                    (postCtxWithTags tags)
-                    ( forM itemsForPage $ \ident' ->
-                        loadSnapshot ident' "teaser"
-                          >>= wordpressifyUrls
-                          >>= relativizeUrls
+  create ["archives/index.html"] $ do
+    route idRoute
+    compile $
+      makeItem ""
+        >>= "templates/archives.html"
+          $$= ( listField
+                  "posts"
+                  (postCtxWithTags tags)
+                  ( forM posts $ \post ->
+                      loadSnapshot post "teaser"
+                        >>= wordpressifyUrls
+                        >>= relativizeUrls
+                  )
+                  <> listField
+                    "tags"
+                    postCtx
+                    ( return $
+                        map (\x -> Item (fromFilePath (fst x)) (fst x)) $
+                          tagsMap tags
                     )
-                    <> listField
-                      "tags"
-                      postCtx
-                      ( return $
-                          map (\x -> Item (fromFilePath (fst x)) (fst x)) $
-                            tagsMap tags
-                      )
-                    <> defaultContext
-                )
-          >>= loadForSite
+                  <> defaultContext
+              )
+        >>= loadForSite
 
   pages <- getMatches "pages/*.org"
   match (fromList pages) $ do
@@ -412,52 +412,56 @@ wpIdentField = mapContext (last . init . splitOn "/") . wpUrlField
 {------------------------------------------------------------------------}
 -- Sorting and pagination
 
-itemUTC :: Identifier -> UTCTime
-itemUTC ident =
-  fromMaybe err $
-    parseTime "%Y%m%d" (take 8 (takeBaseName (toFilePath ident)))
-  where
-    err =
-      error $
-        "itemUTC: "
-          ++ "Could not parse time from filename "
-          ++ show ident
-    parseTime = parseTimeM True defaultTimeLocale
-
-getMatchesBefore ::
-  (MonadMetadata m, MonadFail m) =>
+getMatchesToPublishBefore ::
+  MonadMetadata m =>
   UTCTime ->
   Pattern ->
   m [Identifier]
-getMatchesBefore moment pat =
-  filterM
-    ( \i -> do
-        let seen = dateBefore i
-        published <- getMetadataField i "published"
-        pure $ seen && isJust published
-    )
-    =<< getMatches pat
+getMatchesToPublishBefore moment pat = do
+  getMatches pat
+    >>= mapMaybeM (\i -> fmap (,i) <$> getItemUTC' defaultTimeLocale i)
+    <&> reverse
+      . map snd
+      . sortOn fst
+      . filter
+        ( \(date, _) ->
+            -- Only posts intended to be published have the "published"
+            -- metadata field; this requires the Org file be tagged with
+            -- :publish=NAME: and that it have a :CREATED: or :PUBLISH: date
+            -- in its properties.
+            diffUTCTime date moment < 0
+        )
+
+getItemUTC' ::
+  MonadMetadata m =>
+  TimeLocale ->
+  Identifier ->
+  m (Maybe UTCTime)
+getItemUTC' locale id' = do
+  metadata <- getMetadata id'
+  pure $ do
+    -- now in the maybe monad
+    date <- lookupString "published" metadata
+    parseTimeM True locale "%Y-%m-%d" date
+
+mapMaybeM :: Applicative m => (a -> m (Maybe b)) -> [a] -> m [b]
+mapMaybeM f = foldr g (pure [])
   where
-    dateBefore ident = diffUTCTime moment (itemUTC ident) > 0
+    g a = liftA2 (maybe id (:)) (f a)
 
 paginate ::
-  UTCTime ->
-  Maybe (Int, Int) ->
+  [Identifier] ->
+  Int ->
+  Int ->
   (Int -> Int -> [Identifier] -> Rules ()) ->
   Rules ()
-paginate moment mlim rules = do
-  idents <- getMatchesBefore moment "posts/*.org"
-  let sorted = sortBy (flip byDate) idents
-      chunks = case mlim of
-        Just (itemsPerPage, pageLimit) ->
-          take pageLimit $ chunksOf itemsPerPage sorted
-        Nothing -> [sorted]
-      maxIndex = length chunks
-      pageNumbers = take maxIndex [1 ..]
-      process i = rules i maxIndex
+paginate idents itemsPerPage pageLimit rules =
   zipWithM_ process pageNumbers chunks
   where
-    byDate id1 id2 = compare (itemUTC id1) (itemUTC id2)
+    chunks = take pageLimit $ chunksOf itemsPerPage idents
+    maxIndex = length chunks
+    pageNumbers = take maxIndex [1 ..]
+    process i = rules i maxIndex
 
 {------------------------------------------------------------------------}
 -- RSS/Atom feed
@@ -527,6 +531,7 @@ buildMetadata file meta@(P.Meta metadata) =
           [ ("published", publishDate, P.writePlain),
             ("edited", editedDate file, P.writePlain),
             ("route", publishRoute, P.writePlain)
+            -- ("titleHtml", metaField "title", P.writeHtml5String)
           ]
             ++ M.foldMapWithKey
               (\k _ -> [(T.unpack k, metaField k, P.writePlain)])
@@ -541,6 +546,7 @@ cleanupMetadata mname meta = M.foldMapWithKey ((M.fromList .) . go) meta
     fixTitle (T.unpack -> value) =
       [ ( "title",
           P.MetaString . T.pack $
+            -- Strip any surrounding double-quotes
             case value =~ ("\"(.+)\"" :: String) of
               AllTextSubmatches [_, content] -> content
               _ -> value
@@ -548,10 +554,11 @@ cleanupMetadata mname meta = M.foldMapWithKey ((M.fromList .) . go) meta
       ]
 
     go "title" (P.MetaString value) = fixTitle value
-    go "title" (P.MetaInlines ils) = fixTitle (inlinesTo P.writePlain ils)
+    go "title" (P.MetaInlines ils) = fixTitle (stringify ils)
     go "filetags" (P.MetaString value) =
       [ ( "shouldPublish",
-          P.MetaBool (T.unpack value =~ (":publish=" ++ name ++ ":" :: String))
+          P.MetaBool
+            (T.unpack value =~ (":publish=" ++ name ++ ":" :: String))
         )
         | Just name <- [mname]
       ]
@@ -622,22 +629,12 @@ editedDate file meta =
         pure [P.Str (T.pack (formatShow iso8601Format (utctDay lastModified)))]
       date -> date
 
-withMetadata :: (Metadata -> r) -> FilePath -> IO r
-withMetadata f path = f <$> pandocMetadata Nothing path
-
-firstMatching :: Monad m => [a] -> (a -> m (Maybe b)) -> m (Maybe b)
-firstMatching [] _ = pure Nothing
-firstMatching (x : xs) f =
-  f x >>= \case
-    Nothing -> firstMatching xs f
-    res -> pure res
-
 findEntryByUuid :: [Identifier] -> String -> IO (Maybe FilePath)
 findEntryByUuid entries (map toLower -> uuid) = do
   firstMatching entries $ \entry -> do
     let path = toFilePath entry
     if takeExtension path == ".org"
-      then withMetadata hasUuid path
+      then hasUuid <$> pandocMetadata Nothing path
       else pure Nothing
   where
     -- If this post has the uuid we're looking for, return its route.
@@ -655,6 +652,13 @@ metaField name meta =
     Just (P.MetaBlocks [P.Plain ils]) -> ils
     Just (P.MetaBlocks [P.Para ils]) -> ils
     _ -> []
+
+firstMatching :: Monad m => [a] -> (a -> m (Maybe b)) -> m (Maybe b)
+firstMatching [] _ = pure Nothing
+firstMatching (x : xs) f =
+  f x >>= \case
+    Nothing -> firstMatching xs f
+    res -> pure res
 
 inlinesTo ::
   (P.WriterOptions -> P.Pandoc -> P.PandocPure T.Text) ->
