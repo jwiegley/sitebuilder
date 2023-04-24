@@ -1,8 +1,7 @@
 packages: ./*.cabal
-optional-packages: vendor/*/*.cabal
 
--- source-repository-package
---     type: git
---     location: file:///Users/johnw/src/sitebuilder/vendor/hakyll.git
---     tag: ff8e44674d74c5e2abd8171aa3dba8e204231399
---     --sha256: sha256-+jyOtjJIJo7ggQsNqBS/re36fXom00M71neLa8dm/dM=
+source-repository-package
+    type: git
+    location: https://github.com/jwiegley/hakyll.git
+    tag: da45c36dfdcf37f90f5e0a02e0ef7d5baeb43c95
+    --sha256: sha256-qYS7kWPyebanGlIDEIf48jP/Mc6nGVss7E4+C1VyG8U=
