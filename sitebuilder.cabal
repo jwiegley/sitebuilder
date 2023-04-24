@@ -25,6 +25,7 @@ Executable sitebuilder
     , exceptions
     , filepath     >= 1.3
     , hakyll       >= 4.15.1.2
+    , hakyll-images
     , old-locale
     , pandoc       >= 2.11 && < 2.20 || >= 3.0 && < 3.2
     , pandoc-types

@@ -30,107 +30,17 @@ import qualified Data.Text.IO as TIO
 import Data.Time
 import Data.Time.Format.ISO8601
 import Data.Yaml (decodeFileEither)
--- import Debug.Trace
+import Debug.Trace
 import Hakyll
+import Hakyll.Images (loadImage, resizeImageCompiler)
 import System.Directory
 import System.FilePath
 import System.IO.Unsafe (unsafePerformIO)
 import System.Process (readProcess)
 import qualified Text.Pandoc as P
 import Text.Regex.Posix hiding (empty, match)
--- import Text.Show.Pretty
+import Text.Show.Pretty
 import Prelude hiding (all, any, concatMap)
-
-data SiteConfiguration = SiteConfiguration
-  { siteTitle :: String, -- Title of the site
-    siteDescription :: String, -- Description of the site
-    siteAuthorName :: String, -- Name of the site author
-    siteAuthorEmail :: String, -- Email of the site author
-    siteRoot :: String, -- Root URI of the site
-    siteName :: String, -- If the site at foo.com, then foo
-    siteDeploy :: String, -- Deploy command, replace %s with name
-    siteAnalytics :: String, -- Google Analytics Id
-    siteDisqus :: String, -- Disqus domainname
-    siteContentDir :: String, -- Path to pages, posts, drafts
-    siteDir :: String -- Path to templates and other files
-  }
-
-instance FromJSON SiteConfiguration where
-  parseJSON (Object v) =
-    SiteConfiguration
-      <$> v .: "title"
-      <*> v .: "description"
-      <*> v .: "authorName"
-      <*> v .: "authorEmail"
-      <*> v .: "root"
-      <*> v .: "name"
-      <*> v .: "deploy"
-      <*> v .: "analytics"
-      <*> v .: "disqus"
-      <*> v .: "contentDir"
-      <*> v .: "siteDir"
-  parseJSON invalid = typeMismatch "SiteConfiguration" invalid
-
-readSiteConfiguration :: FilePath -> IO SiteConfiguration
-readSiteConfiguration file = do
-  eres <- decodeFileEither file
-  case eres of
-    Left err ->
-      error $
-        "Could not open or parse "
-          ++ file
-          ++ " file: "
-          ++ show err
-    Right conf -> pure conf
-
-feedConfigurationFromSite :: SiteConfiguration -> FeedConfiguration
-feedConfigurationFromSite SiteConfiguration {..} =
-  FeedConfiguration
-    { feedTitle = siteTitle,
-      feedDescription = siteDescription,
-      feedAuthorName = siteAuthorName,
-      feedAuthorEmail = siteAuthorEmail,
-      feedRoot = siteRoot
-    }
-
-siteCtx :: SiteConfiguration -> Context String
-siteCtx SiteConfiguration {..} =
-  mconcat
-    [ constField "title" siteTitle,
-      constField "description" siteDescription,
-      constField "authorName" siteAuthorName,
-      constField "authorEmail" siteAuthorEmail,
-      constField "root" siteRoot,
-      constField "name" siteName,
-      constField "deploy" siteDeploy,
-      constField "analytics" siteAnalytics,
-      constField "disqus" siteDisqus,
-      constField "contentDir" siteContentDir,
-      constField "siteDir" siteDir
-    ]
-
-($$=) :: Identifier -> Context a -> Item a -> Compiler (Item String)
-($$=) = loadAndApplyTemplate
-
-yuiCompressor :: Compiler (Item String)
-yuiCompressor = do
-  path <- getResourceFilePath
-  makeItem $ unsafePerformIO $ readProcess "yuicompressor" [path] ""
-
-main :: IO ()
-main = do
-  now <- getCurrentTime
-
-  siteConfig <- readSiteConfiguration "config.yaml"
-
-  let config =
-        defaultConfiguration
-          { provideMetadata = pandocMetadata (Just (siteName siteConfig)),
-            inMemoryCache = True,
-            deployCommand = siteDeploy siteConfig
-          }
-
-  hakyllWith config (siteRules now siteConfig)
 
 siteRules :: UTCTime -> SiteConfiguration -> Rules ()
 siteRules now site@SiteConfiguration {..} = do
@@ -139,12 +49,17 @@ siteRules now site@SiteConfiguration {..} = do
 
   match
     ( "files/**"
-        .||. "images/**"
         .||. "favicon.ico"
     )
     $ do
       route idRoute
       compile copyFileCompiler
+
+  match "images/**" $ do
+    route idRoute
+    compile $
+      loadImage
+        >>= resizeImageCompiler 1024 768
 
   match ("css/*.css" .||. "js/*.js") $ do
     route idRoute
@@ -153,7 +68,7 @@ siteRules now site@SiteConfiguration {..} = do
   tags <-
     buildTagsWith
       (getTagsByField "tags")
-      "posts/*.org"
+      "posts/**.org"
       (fromCapture "tags/*/index.html")
 
   posts <- getMatchesToPublishBefore now "posts/*.org"
@@ -166,6 +81,19 @@ siteRules now site@SiteConfiguration {..} = do
           $$= postCtxWithTags tags
         >>= saveSnapshot "content"
         >>= loadForSite
+
+  match ("posts/**.jpg" .||. "posts/**.png") $ do
+    -- For images, remove the "posts/" prefix
+    route $
+      customRoute
+        ( joinPath
+            . tail
+            . splitDirectories
+            . toFilePath
+        )
+    compile $
+      loadImage
+        >>= resizeImageCompiler 1024 768
 
   tagsRules tags $ \tag pat -> do
     route idRoute
@@ -202,8 +130,8 @@ siteRules now site@SiteConfiguration {..} = do
               $$= ( listField
                       "posts"
                       (field "teaser" teaserBody <> postCtxWithTags tags)
-                      ( forM itemsForPage $ \ident' ->
-                          loadSnapshot ident' "teaser"
+                      ( forM itemsForPage $ \ident ->
+                          loadSnapshot ident "teaser"
                             >>= wordpressifyUrls
                             >>= relativizeUrls
                       )
@@ -330,18 +258,24 @@ siteRules now site@SiteConfiguration {..} = do
     postCtxWithTags tags = tagsField "tags" tags <> postCtx
 
     postPandocCompiler :: [Identifier] -> Compiler (Item String)
-    postPandocCompiler entries =
+    postPandocCompiler entries = do
+      ident <- getUnderlying
       pandocCompilerWithTransformM
         defaultHakyllReaderOptions
-        defaultHakyllWriterOptions
-        (unsafeCompiler . fixPostLinks)
+        ( defaultHakyllWriterOptions
+            { P.writerTableOfContents = True,
+              P.writerListings = True,
+              P.writerTOCDepth = 2
+            }
+        )
+        (unsafeCompiler . fixPostLinks ident)
       where
-        fixPostLinks :: P.Pandoc -> IO P.Pandoc
-        fixPostLinks = everywhereM (mkM fixPostLink)
+        fixPostLinks :: Identifier -> P.Pandoc -> IO P.Pandoc
+        fixPostLinks ident = everywhereM (mkM (fixPostLink ident))
 
         -- Fixup Org-roam links to refer the intended document by its route.
-        fixPostLink :: P.Inline -> IO P.Inline
-        fixPostLink l@(P.Link as title (T.unpack -> url, title'))
+        fixPostLink :: Identifier -> P.Inline -> IO P.Inline
+        fixPostLink _ident l@(P.Link as title (T.unpack -> url, title'))
           | AllTextSubmatches [_, uuid] <- (url =~ ("^id:(.+)$" :: String)) = do
               -- Within the [Identifier] gives by entries, find one whose
               -- metadata id == uuid.
@@ -352,13 +286,133 @@ siteRules now site@SiteConfiguration {..} = do
                     as
                     title
                     (T.pack ("/" ++ path), title')
-        fixPostLink x = return x
+        fixPostLink ident (P.Image as title (T.unpack -> url, title'))
+          | AllTextSubmatches [_, target] <-
+              ( url
+                  =~ ( "^\\./("
+                         ++ dropExtension (takeBaseName (toFilePath ident))
+                         ++ "/.*)$" ::
+                         String
+                     )
+              ) =
+              pure $
+                P.Image
+                  as
+                  title
+                  (T.pack ("/" ++ target), title')
+        fixPostLink _ x = return x
+
+{------------------------------------------------------------------------}
+-- Main code
+
+mapMaybeM :: Applicative m => (a -> m (Maybe b)) -> [a] -> m [b]
+mapMaybeM f = foldr g (pure [])
+  where
+    g a = liftA2 (maybe id (:)) (f a)
+
+($$=) :: Identifier -> Context a -> Item a -> Compiler (Item String)
+($$=) = loadAndApplyTemplate
+
+yuiCompressor :: Compiler (Item String)
+yuiCompressor = do
+  path <- getResourceFilePath
+  makeItem $ unsafePerformIO $ readProcess "yuicompressor" [path] ""
+
+main :: IO ()
+main = do
+  now <- getCurrentTime
+  siteConfig <- readSiteConfiguration "config.yaml"
+  hakyllWith
+    defaultConfiguration
+      { provideMetadata = pandocMetadata (Just (siteName siteConfig)),
+        inMemoryCache = True,
+        deployCommand = siteDeploy siteConfig
+      }
+    (siteRules now siteConfig)
+
+{------------------------------------------------------------------------}
+-- Site configuration
+
+data SiteConfiguration = SiteConfiguration
+  { siteTitle :: String, -- Title of the site
+    siteDescription :: String, -- Description of the site
+    siteAuthorName :: String, -- Name of the site author
+    siteAuthorEmail :: String, -- Email of the site author
+    siteRoot :: String, -- Root URI of the site
+    siteName :: String, -- If the site at foo.com, then foo
+    siteDeploy :: String, -- Deploy command, replace %s with name
+    siteKeywords :: String, -- Site keywords
+    siteCopyright :: String, -- Site copyright
+    siteAnalytics :: String, -- Google Analytics Id
+    siteDisqus :: String, -- Disqus domainname
+    siteContentDir :: String, -- Path to pages, posts, drafts
+    siteDir :: String -- Path to templates and other files
+  }
+
+instance FromJSON SiteConfiguration where
+  parseJSON (Object v) =
+    SiteConfiguration
+      <$> v .: "title"
+      <*> v .: "description"
+      <*> v .: "authorName"
+      <*> v .: "authorEmail"
+      <*> v .: "root"
+      <*> v .: "name"
+      <*> v .: "deploy"
+      <*> v .: "keywords"
+      <*> v .: "copyright"
+      <*> v .: "analytics"
+      <*> v .: "disqus"
+      <*> v .: "contentDir"
+      <*> v .: "siteDir"
+  parseJSON invalid = typeMismatch "SiteConfiguration" invalid
+
+readSiteConfiguration :: FilePath -> IO SiteConfiguration
+readSiteConfiguration file = do
+  eres <- decodeFileEither file
+  case eres of
+    Left err ->
+      error $
+        "Could not open or parse "
+          ++ file
+          ++ " file: "
+          ++ show err
+    Right conf -> pure conf
+
+feedConfigurationFromSite :: SiteConfiguration -> FeedConfiguration
+feedConfigurationFromSite SiteConfiguration {..} =
+  FeedConfiguration
+    { feedTitle = siteTitle,
+      feedDescription = siteDescription,
+      feedAuthorName = siteAuthorName,
+      feedAuthorEmail = siteAuthorEmail,
+      feedRoot = siteRoot
+    }
+
+siteCtx :: SiteConfiguration -> Context String
+siteCtx SiteConfiguration {..} =
+  mconcat
+    [ constField "title" siteTitle,
+      constField "description" siteDescription,
+      constField "authorName" siteAuthorName,
+      constField "authorEmail" siteAuthorEmail,
+      constField "root" siteRoot,
+      constField "name" siteName,
+      constField "deploy" siteDeploy,
+      constField "keywords" siteKeywords,
+      constField "copyright" siteCopyright,
+      constField "analytics" siteAnalytics,
+      constField "disqus" siteDisqus,
+      constField "contentDir" siteContentDir,
+      constField "siteDir" siteDir
+    ]
 
 {------------------------------------------------------------------------}
 -- Content normalization
 
 teaserBody :: Item String -> Compiler String
-teaserBody = return . extractTeaser . maxLengthTeaser . compactTeaser . itemBody
+teaserBody =
+  return . extractTeaser . maxLengthTeaser . compactTeaser . itemBody
   where
     extractTeaser [] = []
     extractTeaser xs@(x : xr)
@@ -424,7 +478,7 @@ getMatchesToPublishBefore ::
   m [Identifier]
 getMatchesToPublishBefore moment pat = do
   getMatches pat
-    >>= mapMaybeM (\i -> fmap (,i) <$> getItemUTC' defaultTimeLocale i)
+    >>= mapMaybeM (\i -> fmap (,i) <$> itemUTC defaultTimeLocale i)
     <&> reverse
       . map snd
       . sortOn fst
@@ -436,23 +490,6 @@ getMatchesToPublishBefore moment pat = do
             -- in its properties.
             diffUTCTime date moment < 0
         )
-
-getItemUTC' ::
-  MonadMetadata m =>
-  TimeLocale ->
-  Identifier ->
-  m (Maybe UTCTime)
-getItemUTC' locale id' = do
-  metadata <- getMetadata id'
-  pure $ do
-    -- now in the maybe monad
-    date <- lookupString "published" metadata
-    parseTimeM True locale "%Y-%m-%d" date
-
-mapMaybeM :: Applicative m => (a -> m (Maybe b)) -> [a] -> m [b]
-mapMaybeM f = foldr g (pure [])
-  where
-    g a = liftA2 (maybe id (:)) (f a)
 
 paginate ::
   [Identifier] ->
@@ -508,10 +545,14 @@ pandocMetadata mname file = do
     case P.runPure $ P.readOrg P.def cnt of
       Right t -> return t
       Left e -> error $ "Pandoc read failed: " ++ show e
-  let furtherMetadata =
+  let furtherMeta =
         M.fromList $
           mapMaybe
             ( \b -> case b of
+                -- Properties at file scope like "#+filetags: TAGS" are not
+                -- processed as metadata by the default Pandoc reader. So we
+                -- scan through for RawBlocks that match this pattern and read
+                -- them as tags here.
                 P.RawBlock (P.Format "org") (T.unpack -> text) ->
                   case text =~ ("#\\+([A-Za-z]+):[ \t]+(.+)" :: String) of
                     AllTextSubmatches [_, key, value] ->
@@ -522,10 +563,8 @@ pandocMetadata mname file = do
             blocks
       -- The 'Semigroup' operation for 'Map' is 'union', which prefers values
       -- from the left operand.
-      metadata = cleanupMetadata mname (meta <> furtherMetadata)
-      result = buildMetadata file (P.Meta metadata)
-  -- putStrLn $ "result = " ++ ppShow result
-  pure result
+      metadata = cleanupMetadata mname (meta <> furtherMeta)
+  pure $ buildMetadata file (P.Meta metadata)
 
 buildMetadata :: FilePath -> P.Meta -> Metadata
 buildMetadata file meta@(P.Meta metadata) =
@@ -535,8 +574,8 @@ buildMetadata file meta@(P.Meta metadata) =
         map (\(f, ex, wr) -> (f, inlinesTo wr (ex meta))) $
           [ ("published", publishDate, P.writePlain),
             ("edited", editedDate file, P.writePlain),
-            ("route", publishRoute, P.writePlain)
-            -- ("titleHtml", metaField "title", P.writeHtml5String)
+            ("route", publishRoute, P.writePlain),
+            ("titleHtml", metaField "title", P.writeHtml5String)
           ]
             ++ M.foldMapWithKey
               (\k _ -> [(T.unpack k, metaField k, P.writePlain)])
@@ -548,18 +587,6 @@ cleanupMetadata ::
   M.Map T.Text P.MetaValue
 cleanupMetadata mname meta = M.foldMapWithKey ((M.fromList .) . go) meta
   where
-    fixTitle (T.unpack -> value) =
-      [ ( "title",
-          P.MetaString . T.pack $
-            -- Strip any surrounding double-quotes
-            case value =~ ("\"(.+)\"" :: String) of
-              AllTextSubmatches [_, content] -> content
-              _ -> value
-        )
-      ]
-
-    go "title" (P.MetaString value) = fixTitle value
-    go "title" (P.MetaInlines ils) = fixTitle (stringify ils)
     go "filetags" (P.MetaString value) =
       [ ( "shouldPublish",
           P.MetaBool
@@ -623,6 +650,15 @@ publishDate meta =
             [P.Str s] | Just date <- orgDateToIso s -> [P.Str date]
             _ -> []
     _ -> []
+
+itemUTC ::
+  MonadMetadata m =>
+  TimeLocale ->
+  Identifier ->
+  m (Maybe UTCTime)
+itemUTC locale ident =
+  getMetadataField ident "published"
+    <&> (>>= parseTimeM True locale "%Y-%m-%d")
 
 editedDate :: FilePath -> P.Meta -> [P.Inline]
 editedDate file meta =
