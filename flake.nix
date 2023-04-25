@@ -8,9 +8,7 @@
   };
 
   outputs = { self, nixpkgs, flake-utils, haskellNix }:
-    flake-utils.lib.eachSystem
-      [ "x86_64-linux" "x86_64-darwin"
-        "aarch64-linux" "aarch64-darwin" ] (system:
+    flake-utils.lib.eachDefaultSystem (system:
     let
       pkgs = import nixpkgs {
         inherit system overlays;
@@ -20,7 +18,6 @@
       };
       overlays = [ haskellNix.overlay
         (final: prev: {
-          hakyll = (import ./vendor/hakyll).default;
           sitebuilder =
             final.haskell-nix.project' {
               src = ./.;
@@ -37,5 +34,16 @@
       ];
     in flake // {
       packages.default = flake.packages."sitebuilder:exe:sitebuilder";
+
+      devShell = pkgs.haskellPackages.shellFor {
+        packages = p: [
+        ];
+
+        buildInputs = with pkgs.haskellPackages; [
+          cabal-install
+        ];
+
+        withHoogle = true;
+      };
     });
 }
