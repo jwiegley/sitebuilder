@@ -21,9 +21,10 @@
           sitebuilder =
             final.haskell-nix.project' {
               src = ./.;
-              compiler-nix-name = "ghc944";
+              compiler-nix-name = "ghc927";
               shell.tools = {
                 cabal = {};
+                haskell-language-server = {};
                 # hlint = {};
               };
               shell.buildInputs = with pkgs; [
