@@ -21,7 +21,8 @@
           sitebuilder =
             final.haskell-nix.project' {
               src = ./.;
-              compiler-nix-name = "ghc963";
+              supportHpack = true;
+              compiler-nix-name = "ghc96";
               shell.tools = {
                 cabal = {};
                 # haskell-language-server = {};
