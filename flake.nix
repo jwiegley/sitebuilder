@@ -25,8 +25,8 @@
               compiler-nix-name = "ghc96";
               shell.tools = {
                 cabal = {};
-                # haskell-language-server = {};
-                # hlint = {};
+                haskell-language-server = {};
+                hlint = {};
               };
               shell.buildInputs = with pkgs; [
                 pkg-config
@@ -37,7 +37,7 @@
     in flake // {
       packages.default = flake.packages."sitebuilder:exe:sitebuilder";
 
-      devShell = pkgs.haskellPackages.shellFor {
+      devShell = flake.devShell // {
         packages = p: [
         ];
 
