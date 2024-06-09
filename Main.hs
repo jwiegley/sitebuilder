@@ -29,6 +29,7 @@ import Data.List.Split hiding (oneOf)
 import qualified Data.Map.Strict as M
 import Data.Maybe
 import Data.Monoid
+import qualified Data.Set as S
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import Data.Time
@@ -42,6 +43,7 @@ import System.FilePath
 import System.IO.Unsafe (unsafePerformIO)
 import System.Process (readProcess)
 import qualified Text.Pandoc as P
+import qualified Text.Pandoc.Options as P
 import Text.Regex.Posix hiding (empty, match)
 import Text.Show.Pretty
 import Prelude hiding (all, any, concatMap)
@@ -91,7 +93,7 @@ siteRules now site@SiteConfiguration {..} = do
     route $
       customRoute
         ( joinPath
-            . tail
+            . drop 1
             . splitDirectories
             . toFilePath
         )
@@ -535,9 +537,24 @@ rssBodyField root key =
   where
     wordpress = replaceAll "/index.html" (const "/")
 
-    absolute x
-      | head x == '/' = root ++ x
-      | otherwise = x
+    absolute x@('/' : _) = root ++ x
+    absolute x = x
+
+pandocMathCompiler :: Compiler (Item String)
+pandocMathCompiler =
+  let mathExtensions =
+        [ P.Ext_tex_math_dollars,
+          P.Ext_tex_math_double_backslash,
+          P.Ext_latex_macros
+        ]
+      defaultExtensions = P.writerExtensions defaultHakyllWriterOptions
+      newExtensions = foldr P.enableExtension defaultExtensions mathExtensions
+      writerOptions =
+        defaultHakyllWriterOptions
+          { P.writerExtensions = newExtensions,
+            P.writerHTMLMathMethod = P.MathJax ""
+          }
+   in pandocCompilerWith defaultHakyllReaderOptions writerOptions
 
 {------------------------------------------------------------------------}
 -- Metadata
