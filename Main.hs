@@ -5,11 +5,15 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
+
+{-# HLINT ignore "Use lambda-case" #-}
 
 module Main where
 
 import Control.Applicative
+import Control.Arrow ((***))
 import Control.Monad hiding (forM_)
 import Data.Aeson (FromJSON (..), Value (Object), (.:))
 import qualified Data.Aeson.Key as AT
@@ -189,27 +193,28 @@ siteRules now site@SiteConfiguration {..} = do
 
   create ["atom.xml"] $ do
     route idRoute
-    compile $ do
+    compile $
       renderAtom
         (feedConfigurationFromSite site)
         ( postCtxWithTags tags
             <> feedContext siteRoot
         )
-        =<< return . take 10
+        . take 10
         =<< recentFirst
         =<< traverse (`loadSnapshot` "content") posts
 
   create ["rss.xml"] $ do
     route idRoute
-    compile $
-      renderRss
-        (feedConfigurationFromSite site)
-        ( postCtxWithTags tags
-            <> feedContext siteRoot
-        )
-        =<< return . take 10
-        =<< recentFirst
-        =<< traverse (`loadSnapshot` "content") posts
+    compile
+      ( renderRss
+          (feedConfigurationFromSite site)
+          ( postCtxWithTags tags
+              <> feedContext siteRoot
+          )
+          . take 10
+          =<< recentFirst
+          =<< traverse (`loadSnapshot` "content") posts
+      )
 
   create ["robots.txt"] $ do
     route idRoute
@@ -276,7 +281,7 @@ siteRules now site@SiteConfiguration {..} = do
         -- Fixup Org-roam links to refer the intended document by its route.
         fixPostLink :: Identifier -> P.Inline -> IO P.Inline
         fixPostLink _ident l@(P.Link as title (T.unpack -> url, title'))
-          | AllTextSubmatches [_, uuid] <- (url =~ ("^id:(.+)$" :: String)) = do
+          | AllTextSubmatches [_, uuid] <- url =~ ("^id:(.+)$" :: String) = do
               -- Within the [Identifier] gives by entries, find one whose
               -- metadata id == uuid.
               findEntryByUuid entries uuid <&> \case
@@ -288,13 +293,12 @@ siteRules now site@SiteConfiguration {..} = do
                     (T.pack ("/" ++ path), title')
         fixPostLink ident (P.Image as title (T.unpack -> url, title'))
           | AllTextSubmatches [_, target] <-
-              ( url
-                  =~ ( "^\\./("
-                         ++ dropExtension (takeBaseName (toFilePath ident))
-                         ++ "/.*)$" ::
-                         String
-                     )
-              ) =
+              url
+                =~ ( "^\\./("
+                       ++ dropExtension (takeBaseName (toFilePath ident))
+                       ++ "/.*)$" ::
+                       String
+                   ) =
               pure $
                 P.Image
                   as
@@ -305,7 +309,7 @@ siteRules now site@SiteConfiguration {..} = do
 {------------------------------------------------------------------------}
 -- Main code
 
-mapMaybeM :: Applicative m => (a -> m (Maybe b)) -> [a] -> m [b]
+mapMaybeM :: (Applicative m) => (a -> m (Maybe b)) -> [a] -> m [b]
 mapMaybeM f = foldr g (pure [])
   where
     g a = liftA2 (maybe id (:)) (f a)
@@ -472,7 +476,7 @@ wpIdentField = mapContext (last . init . splitOn "/") . wpUrlField
 -- Sorting and pagination
 
 getMatchesToPublishBefore ::
-  MonadMetadata m =>
+  (MonadMetadata m) =>
   UTCTime ->
   Pattern ->
   m [Identifier]
@@ -518,7 +522,7 @@ feedContext root =
 rssTitleField :: String -> Context String
 rssTitleField key = field key $ \i -> do
   value <- getMetadataField (itemIdentifier i) "title"
-  maybe empty return $ replaceAll "&" (const "&amp;") <$> value
+  maybe empty (return . replaceAll "&" (const "&amp;")) value
 
 rssBodyField :: String -> String -> Context String
 rssBodyField root key =
@@ -548,7 +552,7 @@ pandocMetadata mname file = do
   let furtherMeta =
         M.fromList $
           mapMaybe
-            ( \b -> case b of
+            ( \case
                 -- Properties at file scope like "#+filetags: TAGS" are not
                 -- processed as metadata by the default Pandoc reader. So we
                 -- scan through for RawBlocks that match this pattern and read
@@ -569,7 +573,7 @@ pandocMetadata mname file = do
 buildMetadata :: FilePath -> P.Meta -> Metadata
 buildMetadata file meta@(P.Meta metadata) =
   AT.fromList $
-    map (\(f, t) -> (AT.fromString f, AT.String t)) $
+    map (AT.fromString *** AT.String) $
       filter (not . T.null . snd) $
         map (\(f, ex, wr) -> (f, inlinesTo wr (ex meta))) $
           [ ("published", publishDate, P.writePlain),
@@ -585,7 +589,7 @@ cleanupMetadata ::
   Maybe String ->
   M.Map T.Text P.MetaValue ->
   M.Map T.Text P.MetaValue
-cleanupMetadata mname meta = M.foldMapWithKey ((M.fromList .) . go) meta
+cleanupMetadata mname = M.foldMapWithKey ((M.fromList .) . go)
   where
     go "filetags" (P.MetaString value) =
       [ ( "shouldPublish",
@@ -652,7 +656,7 @@ publishDate meta =
     _ -> []
 
 itemUTC ::
-  MonadMetadata m =>
+  (MonadMetadata m) =>
   TimeLocale ->
   Identifier ->
   m (Maybe UTCTime)
@@ -694,7 +698,7 @@ metaField name meta =
     Just (P.MetaBlocks [P.Para ils]) -> ils
     _ -> []
 
-firstMatching :: Monad m => [a] -> (a -> m (Maybe b)) -> m (Maybe b)
+firstMatching :: (Monad m) => [a] -> (a -> m (Maybe b)) -> m (Maybe b)
 firstMatching [] _ = pure Nothing
 firstMatching (x : xs) f =
   f x >>= \case
